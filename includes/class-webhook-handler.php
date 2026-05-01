@@ -30,11 +30,13 @@ class TPV_Sync_Webhook
 
     private TPV_Sync_Product_Sync $products;
     private TPV_Sync_Order_Sync   $orders;
+    private ?TPV_Sync_API_Client  $api;
 
-    public function __construct(TPV_Sync_Product_Sync $products, TPV_Sync_Order_Sync $orders)
+    public function __construct(TPV_Sync_Product_Sync $products, TPV_Sync_Order_Sync $orders, ?TPV_Sync_API_Client $api = null)
     {
         $this->products = $products;
         $this->orders   = $orders;
+        $this->api      = $api;
     }
 
     public static function idem_table_name(): string
@@ -337,14 +339,27 @@ class TPV_Sync_Webhook
                     break;
 
                 // ── Clientes ────────────────────────────────────────────────
-                // Anti-bucle: activar la guardia para que los hooks WC
-                // (user_register/profile_update) NO re-empujen al TPV
-                // mientras el receptor escribe en wp_users desde el TPV.
+                // El payload del webhook trae solo `resource_id` + array de
+                // changed_fields (nombres). Hacemos GET /customers/{id} a la
+                // API para traer los datos frescos antes de upsert en WC.
+                // Anti-bucle: activar guardia para que los hooks WC
+                // (user_register/profile_update/customer_save_address) NO
+                // re-empujen al TPV mientras escribimos en wp_users.
                 case 'customer.created':
                 case 'customer.updated':
+                    if ($resourceId <= 0) break;
                     $GLOBALS['tpv_sync_skip_wc_customer_push'] = true;
                     try {
-                        $this->products->sync_customer_from_tpv($resourceId, $fields);
+                        $api = $this->api ?? new TPV_Sync_API_Client();
+                        $r = $api->get("/customers/$resourceId");
+                        $data = $r['data'] ?? null;
+                        if (is_array($data) && !empty($data['email'])) {
+                            $this->products->sync_customer_from_tpv($resourceId, $data);
+                        } else {
+                            $this->log($eventType, $resourceId,
+                                'GET /customers/' . $resourceId . ' devolvió payload vacío'
+                            );
+                        }
                     } finally {
                         $GLOBALS['tpv_sync_skip_wc_customer_push'] = false;
                     }

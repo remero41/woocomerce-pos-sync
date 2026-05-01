@@ -73,7 +73,7 @@ class TPV_Sync
         $this->products  = new TPV_Sync_Product_Sync($this->api);
         $this->orders    = new TPV_Sync_Order_Sync($this->api);
         $this->customers = new TPV_Sync_Customer_Sync($this->api);
-        $this->webhooks  = new TPV_Sync_Webhook($this->products, $this->orders);
+        $this->webhooks  = new TPV_Sync_Webhook($this->products, $this->orders, $this->api);
         $this->queue     = new TPV_Sync_Queue($this->api, $this->products, $this->orders);
 
         // Webhook endpoint TPV → WC (siempre activo si hay credenciales)
@@ -116,14 +116,27 @@ class TPV_Sync
         }
 
         // ── Clientes WC → TPV ────────────────────────────────────────────────
-        // user_register dispara cuando se crea un user (front checkout, admin,
-        // signup). profile_update dispara en cada wp_update_user (cambio de
-        // email, nombre, billing_*, etc.). delete_user es self-explanatory.
+        // Cubrimos los puntos donde WC/WP actualiza datos de un customer:
+        //   - user_register: signup nuevo (front, admin, REST).
+        //   - profile_update: wp_update_user core (email, nombre).
+        //   - woocommerce_customer_save_address: cliente edita dirección
+        //     en Mi Cuenta. Los update_user_meta sueltos de billing_* NO
+        //     disparan profile_update, así que necesitamos este hook.
+        //   - woocommerce_customer_object_updated_props: WC API REST y
+        //     cambios via WC_Customer object (admin → editar usuario WC,
+        //     plugins de import, etc.).
+        //   - delete_user: borrado permanente.
         // El plugin filtra dentro a usuarios con rol 'customer' para no
         // empujar admins/editores/suscriptores genéricos al TPV.
-        add_action('user_register',  [$this->customers, 'push_wc_user_to_tpv'],        10, 1);
-        add_action('profile_update', [$this->customers, 'push_wc_user_to_tpv'],        10, 1);
-        add_action('delete_user',    [$this->customers, 'push_wc_user_delete_to_tpv'], 10, 1);
+        add_action('user_register',                       [$this->customers, 'push_wc_user_to_tpv'],        10, 1);
+        add_action('profile_update',                      [$this->customers, 'push_wc_user_to_tpv'],        10, 1);
+        add_action('woocommerce_customer_save_address',   [$this->customers, 'push_wc_user_to_tpv'],        10, 1);
+        add_action('woocommerce_customer_object_updated_props', function ($customer) {
+            if (is_object($customer) && method_exists($customer, 'get_id')) {
+                TPV_Sync::instance()->customers->push_wc_user_to_tpv((int)$customer->get_id());
+            }
+        }, 10, 1);
+        add_action('delete_user',                         [$this->customers, 'push_wc_user_delete_to_tpv'], 10, 1);
     }
 
     public function register_webhook_endpoint(): void
