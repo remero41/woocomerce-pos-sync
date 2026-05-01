@@ -1,0 +1,18 @@
+/vendor/
+/composer.lock
+/.phpunit.result.cache
+/.phpcs-cache
+*.log
+*.sql.gz
+
+# Archivos del entorno de desarrollo local
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Endpoint dev-only (no distribuir)
+# NOTA: tests/e2e_api.php sólo responde si TPV_SYNC_E2E_ENABLED=true en wp-config.php
+# pero por seguridad el build de distribución lo puede excluir.

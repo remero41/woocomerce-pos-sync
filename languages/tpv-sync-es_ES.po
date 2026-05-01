@@ -1,0 +1,329 @@
+# Spanish (es_ES) translation for Catinfog Conector
+msgid ""
+msgstr ""
+"Project-Id-Version: Catinfog Conector 2.0.0\n"
+"POT-Creation-Date: 2026-04-25\n"
+"PO-Revision-Date: 2026-04-25\n"
+"Last-Translator: Catinfog <soporte@catinfog.com>\n"
+"Language-Team: Español\n"
+"Language: es_ES\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+"X-Domain: tpv-sync\n"
+
+msgid "A. Traer catálogo del TPV a WooCommerce"
+msgstr "A. Traer catálogo del TPV a WooCommerce"
+
+msgid "Abandonados"
+msgstr "Abandonados"
+
+msgid "Activa"
+msgstr "Activa"
+
+msgid "Activando..."
+msgstr "Activando..."
+
+msgid "Activar sincronización"
+msgstr "Activar sincronización"
+
+msgid "Activar sincronización en tiempo real"
+msgstr "Activar sincronización en tiempo real"
+
+msgid "Activar tiempo real"
+msgstr "Activar tiempo real"
+
+msgid "Activos"
+msgstr "Activos"
+
+msgid "B. Enviar catálogo de WooCommerce al TPV"
+msgstr "B. Enviar catálogo de WooCommerce al TPV"
+
+msgid "¿Borrar?"
+msgstr "¿Borrar?"
+
+msgid "Cada venta de la tienda crea un pedido en el TPV con cliente, NIF y factura. Los cambios de estado vuelven a la tienda automáticamente."
+msgstr "Cada venta de la tienda crea un pedido en el TPV con cliente, NIF y factura. Los cambios de estado vuelven a la tienda automáticamente."
+
+msgid "Catálogo"
+msgstr "Catálogo"
+
+msgid "Completados"
+msgstr "Completados"
+
+msgid "Con esto activo, cualquier cambio en el TPV (stock, precios, productos) llega a tu tienda al instante — y al revés. Es la parte que hace que ambos sistemas se mantengan sincronizados sin tocar nada."
+msgstr "Con esto activo, cualquier cambio en el TPV (stock, precios, productos) llega a tu tienda al instante — y al revés. Es la parte que hace que ambos sistemas se mantengan sincronizados sin tocar nada."
+
+msgid "Conectado"
+msgstr "Conectado"
+
+msgid "Conectar al TPV"
+msgstr "Conectar al TPV"
+
+msgid "Conexión OK"
+msgstr "Conexión OK"
+
+msgid "Configura primero las credenciales."
+msgstr "Configura primero las credenciales."
+
+msgid "Contraseña"
+msgstr "Contraseña"
+
+msgid "Copia los datos desde el TPV: Configuración → WooCommerce Conector."
+msgstr "Copia los datos desde el TPV: Configuración → Catinfog Conector."
+
+msgid "Crea en WooCommerce los productos que ya tienes en el TPV. Los existentes se actualizan."
+msgstr "Crea en WooCommerce los productos que ya tienes en el TPV. Los existentes se actualizan."
+
+msgid "Cuando una petición al TPV falla, entra aquí para reintentarse con backoff. Solo es útil para diagnóstico — en operación normal no hace falta mirarlo."
+msgstr "Cuando una petición al TPV falla, entra aquí para reintentarse con backoff. Solo es útil para diagnóstico — en operación normal no hace falta mirarlo."
+
+msgid "¿Cuándo usar esto?"
+msgstr "¿Cuándo usar esto?"
+
+msgid "%d borrados en TPV"
+msgstr "%d borrados en el TPV"
+
+msgid "%d creados · %d actualizados · %d errores."
+msgstr "%d creados · %d actualizados · %d errores."
+
+msgid "%d entradas abandonadas reencoladas."
+msgstr "%d entradas abandonadas reencoladas."
+
+msgid "%d entradas purgadas (done/abandoned > 30 días)."
+msgstr "%d entradas purgadas (completadas/abandonadas > 30 días)."
+
+msgid "%d enviados · %d omitidos · %d errores (de %d total)."
+msgstr "%d enviados · %d omitidos · %d errores (de %d en total)."
+
+msgid "%d errores al borrar en TPV"
+msgstr "%d errores al borrar en el TPV"
+
+msgid "%d productos despublicados."
+msgstr "%d productos despublicados."
+
+msgid "%d productos desvinculados"
+msgstr "%d productos desvinculados"
+
+msgid "%d productos en WooCommerce ya no existen en el TPV. ¿Qué quieres hacer?"
+msgstr "%d productos en WooCommerce ya no existen en el TPV. ¿Qué quieres hacer?"
+
+msgid "Despublicando..."
+msgstr "Despublicando…"
+
+msgid "Despublicar huérfanos"
+msgstr "Despublicar huérfanos"
+
+msgid "Detalle de errores"
+msgstr "Detalle de errores"
+
+msgid "Diagnóstico avanzado: cola de reintentos"
+msgstr "Diagnóstico avanzado: cola de reintentos"
+
+msgid "Elegir qué sincronizar"
+msgstr "Elegir qué sincronizar"
+
+msgid "Elimina el vínculo entre productos de WooCommerce y el TPV. El siguiente "
+msgstr "Elimina el vínculo entre productos de WooCommerce y el TPV. El siguiente "
+
+msgid "Eliminar"
+msgstr "Eliminar"
+
+msgid "Entrada eliminada."
+msgstr "Entrada eliminada."
+
+msgid "Entrada reencolada para reintento inmediato."
+msgstr "Entrada reencolada para reintento inmediato."
+
+msgid "Enviando..."
+msgstr "Enviando…"
+
+msgid "Enviando productos al TPV..."
+msgstr "Enviando productos al TPV…"
+
+msgid "Enviar ahora"
+msgstr "Enviar ahora"
+
+msgid "Enviar al TPV"
+msgstr "Enviar al TPV"
+
+msgid "Error de conexión."
+msgstr "Error de conexión."
+
+msgid "Estado"
+msgstr "Estado"
+
+msgid "Evento"
+msgstr "Evento"
+
+msgid "Fecha"
+msgstr "Fecha"
+
+msgid "(guardada — déjalo vacío para no cambiarla)"
+msgstr "(guardada — déjalo vacío para no cambiarla)"
+
+msgid "Guardar"
+msgstr "Guardar"
+
+msgid "Guardar módulos"
+msgstr "Guardar módulos"
+
+msgid "Importando..."
+msgstr "Importando…"
+
+msgid "Importando productos..."
+msgstr "Importando productos…"
+
+msgid "Importar del TPV"
+msgstr "Importar del TPV"
+
+msgid "Inicio"
+msgstr "Inicio"
+
+msgid "Intentos"
+msgstr "Intentos"
+
+msgid "Log"
+msgstr "Registro"
+
+msgid "Mantener"
+msgstr "Mantener"
+
+msgid "Mensaje"
+msgstr "Mensaje"
+
+msgid "Ningún producto especificado."
+msgstr "Ningún producto especificado."
+
+msgid "Opcional · una sola vez"
+msgstr "Opcional · una sola vez"
+
+msgid "Operación"
+msgstr "Operación"
+
+msgid "Pedidos"
+msgstr "Pedidos"
+
+msgid "Pega la contraseña del TPV"
+msgstr "Pega la contraseña del TPV"
+
+msgid "Pendiente"
+msgstr "Pendiente"
+
+msgid "Pendientes"
+msgstr "Pendientes"
+
+msgid "Permission denied"
+msgstr "Permiso denegado"
+
+msgid "Primera carga"
+msgstr "Primera carga"
+
+msgid "Probando..."
+msgstr "Probando…"
+
+msgid "Probar conexión"
+msgstr "Probar conexión"
+
+msgid "Productos, precios, imágenes y stock sincronizados entre WooCommerce y el TPV."
+msgstr "Productos, precios, imágenes y stock sincronizados entre WooCommerce y el TPV."
+
+msgid "Puede tardar varios minutos. No cierres esta página."
+msgstr "Puede tardar varios minutos. No cierres esta página."
+
+msgid "Purgar antiguos"
+msgstr "Purgar antiguos"
+
+msgid "¿Purgar entradas done/abandoned de >30 días?"
+msgstr "¿Purgar entradas completadas/abandonadas de más de 30 días?"
+
+msgid "Reconfigurar"
+msgstr "Reconfigurar"
+
+msgid "Reencolar abandonados"
+msgstr "Reencolar abandonados"
+
+msgid "¿Reencolar todas las entradas abandonadas?"
+msgstr "¿Reencolar todas las entradas abandonadas?"
+
+msgid "Reintentar ahora"
+msgstr "Reintentar ahora"
+
+msgid "Reseteando..."
+msgstr "Reiniciando…"
+
+msgid "Resetear sincronización"
+msgstr "Reiniciar sincronización"
+
+msgid "Respuesta inesperada: "
+msgstr "Respuesta inesperada: "
+
+msgid "Saltar productos ya vinculados"
+msgstr "Saltar productos ya vinculados"
+
+msgid "Se enviarán todos los productos de WooCommerce al TPV. ¿Continuar?"
+msgstr "Se enviarán todos los productos de WooCommerce al TPV. ¿Continuar?"
+
+msgid "¿Seguro? Se borrarán TODOS los productos en el TPV y se desvincularán en WooCommerce. Esta acción no se puede deshacer."
+msgstr "¿Seguro? Se borrarán TODOS los productos en el TPV y se desvincularán en WooCommerce. Esta acción no se puede deshacer."
+
+msgid "¿Seguro? Se desvincularán TODOS los productos entre WooCommerce y el TPV (pero no se borran). El siguiente "
+msgstr "¿Seguro? Se desvincularán TODOS los productos entre WooCommerce y el TPV (pero no se borran). El siguiente "
+
+msgid "Sin entradas."
+msgstr "Sin entradas."
+
+msgid "Sin eventos todavía."
+msgstr "Sin eventos todavía."
+
+msgid "Sin módulos activos"
+msgstr "Sin módulos activos"
+
+msgid "Sincroniza tu tienda WooCommerce con el TPV en tiempo real."
+msgstr "Sincroniza tu tienda WooCommerce con el TPV en tiempo real."
+
+msgid "Sincronización activa"
+msgstr "Sincronización activa"
+
+msgid "Solo si ya tenías productos antes de instalar el plugin y quieres volcarlos de un lado al otro. Si empezaste desde cero, puedes ignorar esta sección: todo lo que crees a partir de ahora se sincroniza solo."
+msgstr "Solo si ya tenías productos antes de instalar el plugin y quieres volcarlos de un lado al otro. Si empezaste desde cero, puedes ignorar esta sección: todo lo que crees a partir de ahora se sincroniza solo."
+
+msgid "Sube al TPV los productos que ya tienes en WooCommerce. Los existentes se actualizan."
+msgstr "Sube al TPV los productos que ya tienes en WooCommerce. Los existentes se actualizan."
+
+msgid "También borrar los productos en el TPV antes de desvincular"
+msgstr "También borrar los productos en el TPV antes de desvincular"
+
+msgid "Todo listo"
+msgstr "Todo listo"
+
+msgid "Todos"
+msgstr "Todos"
+
+msgid "Total"
+msgstr "Total"
+
+msgid "Tu tienda y el TPV están sincronizados. No tienes que hacer nada más — los cambios viajan solos en ambas direcciones."
+msgstr "Tu tienda y el TPV están sincronizados. No tienes que hacer nada más — los cambios viajan solos en ambas direcciones."
+
+msgid "Último error"
+msgstr "Último error"
+
+msgid "URL del TPV"
+msgstr "URL del TPV"
+
+msgid "Úsalo si el catálogo del TPV está corrupto y quieres re-crear todo desde WooCommerce."
+msgstr "Úsalo si el catálogo del TPV está corrupto y quieres recrear todo desde WooCommerce."
+
+msgid "Ver productos"
+msgstr "Ver productos"
+
+msgid "Ya puedes pulsar "
+msgstr "Ya puedes pulsar "
+
+msgid "You do not have permission to access this page."
+msgstr "No tienes permiso para acceder a esta página."
+
+msgid "Zona peligrosa"
+msgstr "Zona peligrosa"
