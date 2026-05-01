@@ -29,8 +29,8 @@
         "lint:fix": "phpcbf --standard=phpcs.xml",
         "analyze": "phpstan analyze -c phpstan.neon",
         "test": "phpunit",
-        "test:suite": "bash .memoria_wp/tests/cazabugs_200_wp.sh",
-        "test:focused": "bash .memoria_wp/tests/bugs_focused.sh",
+        "test:suite": "bash dev-tools/tests/cazabugs_200_wp.sh",
+        "test:focused": "bash dev-tools/tests/bugs_focused.sh",
         "mutation": "infection --threads=4 --min-msi=70 --min-covered-msi=80"
     }
 }

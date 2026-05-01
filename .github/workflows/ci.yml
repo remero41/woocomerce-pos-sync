@@ -104,7 +104,7 @@ jobs:
         run: |
           find . -type f -name '*.php' \
               -not -path './vendor/*' \
-              -not -path './.memoria_wp/*' \
+              -not -path './dev-tools/*' \
               -print0 | xargs -0 -n1 php -l
 
   # El job "e2e" requiere infraestructura externa (WP + TPV API) y sólo tiene
@@ -118,4 +118,4 @@ jobs:
       - name: Run cazabugs suite
         env:
           TEST_SECRET: ${{ secrets.TEST_SECRET }}
-        run: bash .memoria_wp/tests/cazabugs_200_wp.sh
+        run: bash dev-tools/tests/cazabugs_200_wp.sh

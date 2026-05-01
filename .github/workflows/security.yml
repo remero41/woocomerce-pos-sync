@@ -32,7 +32,7 @@ jobs:
             --config=p/secrets \
             --config=p/ci \
             --sarif --output=semgrep.sarif \
-            --exclude=".memoria_wp" \
+            --exclude="dev-tools" \
             --exclude="vendor" \
             --exclude="languages" \
             --error

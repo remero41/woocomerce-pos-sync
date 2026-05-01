@@ -12,7 +12,7 @@ parameters:
     excludePaths:
         analyseAndScan:
             - tests/*
-            - .memoria_wp/*
+            - dev-tools/*
             - vendor/*
             - languages/*
 

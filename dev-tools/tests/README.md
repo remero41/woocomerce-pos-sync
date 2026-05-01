@@ -6,7 +6,13 @@ Plantilla portada de `tpv100/modules/tpvsync/.memoria_prestashop/tests/cazabugs_
 ## Uso
 
 ```bash
-bash /var/www/html/tpv85/public_html/wp-content/plugins/woocommerce_conector/.memoria_wp/tests/cazabugs_200_wp.sh
+# Desde la raíz del repo
+bash dev-tools/tests/cazabugs_200_wp.sh
+```
+
+O via composer:
+```bash
+composer test:suite
 ```
 
 Duración: ~3-4 min. Produce salida coloreada con ✔ PASS / ✖ FAIL y resumen por área.

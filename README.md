@@ -1,106 +1,154 @@
 # Catinfog Conector — plugin WooCommerce
 
-Conector bidireccional entre WooCommerce y el TPV Catinfog. Sincroniza productos, stock, pedidos y devoluciones en tiempo real.
+Plugin WordPress que conecta una tienda **WooCommerce** con un **TPV Catinfog** (basado en OpenCart) y mantiene catálogo, stock y pedidos sincronizados en tiempo real, en ambas direcciones.
 
-Para la descripción orientada a usuario final (WP.org), mira [`readme.txt`](readme.txt).
-Para el changelog, mira [`CHANGELOG.md`](CHANGELOG.md).
+> Para la descripción orientada a usuario final (WordPress.org), mira [`readme.txt`](readme.txt).
+> Para el changelog, mira [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
 
-## Desarrollo
+## ¿Qué hace?
 
-### Requisitos
+El cliente típico tiene una tienda online en WooCommerce y un punto de venta físico Catinfog. Sin este plugin, mantener los precios, stock y catálogo coherentes entre ambos es manual y propenso a errores. El plugin automatiza el flujo:
+
+- **Catálogo bidireccional**: productos creados/editados/eliminados en cualquiera de los dos lados se replican en el otro. El admin elige cuál es la **fuente de catálogo** durante el wizard inicial (modo `principal=tpv` o `principal=wc`); en el lado no-principal los cambios se revierten para evitar divergencia.
+- **Variantes**: productos variables WC (Talla / Color / etc.) se aplanan al modelo del TPV (una opción con valores combinados tipo "S-Rojo", "M-Verde"). Multi-atributo se gestiona con producto cartesiano restringido a las combinaciones realmente existentes en WC, preservando código de barras por variante.
+- **Imágenes**: thumbnail + galería WC se suben al TPV vía `POST /products/{id}/images` con descarga server-side validada por dominio (anti-SSRF). El plugin marca cada URL ya enviada para evitar reenvíos.
+- **Stock**: movimientos de stock se propagan en deltas (no totales) via `PATCH /products/{id}/stock` con anti-bucle bidireccional.
+- **Pedidos WC → TPV**: cada pedido pagado en WC se crea en el TPV con líneas, IVA por línea, cupones, dirección, NIF y total bruto. El TPV emite ticket o factura (VeriFactu).
+- **Webhooks TPV → WC**: stock, status de pedido, devoluciones, clientes y categorías llegan como webhooks HMAC firmados. Idempotencia atómica vía tabla con PK única.
+- **Mapeo de impuestos**: panel admin para asociar cada `tax_class` de WC con el `tax_class_id` del TPV. Conversión gross↔net automática usando `wc_get_price_excluding_tax` para respetar la configuración fiscal del shop. Banner crítico si la combinación WC es peligrosa (precios brutos sin rates → riesgo de doble IVA).
+
+## Arquitectura
+
+```
+WooCommerce ───push HTTP───→  TPV API
+WooCommerce ←──webhook HMAC── TPV
+```
+
+El plugin actúa como cliente OAuth2 contra la API REST del TPV (módulo `api/v1` del proyecto [api_tpv](https://github.com/remero41/api_tpv)). Defensa en profundidad:
+- Cliente HTTP con **circuit breaker** (apaga la integración tras N fallos seguidos) y **retry con backoff** ante 429/5xx.
+- **Auto-recovery HMAC**: si el TPV responde 401 con `signature_invalid` (rotación de secret no propagada), el plugin re-registra el webhook silenciosamente y reintenta.
+- **Cifrado libsodium** para los secrets en `wp_options` (no en plain text).
+- **Queue persistente** con backoff exponencial para operaciones que fallan y deben reintentarse fuera del request.
+
+## Requisitos
 
 - PHP 8.0+
-- WordPress 6.0+ con WooCommerce 7.0+ (HPOS activo)
-- Composer (para dev-tools)
-- MySQL / MariaDB
+- WordPress 6.0+ con WooCommerce 7.0+
+- HPOS (High Performance Order Storage) activo
+- libsodium habilitado (PHP 7.2+ lo trae)
+- MySQL 5.7+ / MariaDB 10.3+
 
-### Setup local
+## Estructura del repo
+
+```
+woocommerce-conector.php         # Bootstrap: hooks, activación, cron, rewrite
+includes/                        # Plugin (lo que se distribuye)
+    class-admin.php                  UI admin (wizard, tabs Inicio/Impuestos/Log,
+                                     banners de configuración fiscal)
+    class-api-client.php             Cliente HTTP con OAuth2, HMAC, circuit
+                                     breaker, auto-recovery, X-Price-Format
+    class-circuit-breaker.php
+    class-cli.php                    Comandos `wp tpv-sync *`
+    class-notifications.php          Alertas email + DLQ
+    class-order-sync.php             WC↔TPV pedidos: refunds, cupones, anti-bucle
+    class-product-sync.php           WC↔TPV productos, variantes, imágenes,
+                                     stock, mapeo de impuestos, gross→net
+    class-queue.php                  Fallback queue con backoff exponencial
+    class-secrets.php                Cifrado libsodium de secrets
+    class-webhook-handler.php        Receptor HMAC + idempotencia atómica
+tests/                           # Tests del plugin distribuible
+    unit/                            PHPUnit (Queue, CircuitBreaker, Secrets,
+                                     WebhookSignature, options flatten + tax mapping)
+    e2e_api.php                      Endpoint dev-only (gated TPV_SYNC_E2E_ENABLED)
+    wp-stubs.php                     Stubs WP/WC para tests aislados
+    run_cazabugs*.php                Suites cazabugs internas
+docs/
+    PLUGIN_DEVELOPER.md              Guía para desarrolladores
+languages/                       # i18n (.po + .mo: es_ES, en_US, fr_FR)
+.github/workflows/               # CI: phpcs, phpstan, phpunit, security scan
+
+dev-tools/                       # Recursos internos NO distribuidos en WP.org
+    findings/                        Análisis de bugs encontrados durante caza
+        BUGS_WC_001_006.md
+        FIXES_APLICADOS_2026-04-24.md
+    tests/                           Scripts e2e contra entorno real
+        cazabugs_200_wp.sh           Suite 200 tests bash sobre WP+TPV reales
+        bugs_focused.sh              Tests TDD para bugs concretos
+        README.md                    Documentación de la suite
+```
+
+## Setup local
 
 ```bash
 # Instala dev-tools
 composer install
 
-# Análisis estático
-composer analyze        # PHPStan level 5
+# Análisis estático (PHPStan level 5)
+composer analyze
 
-# Lint (WordPress-Extra)
-composer lint           # ver issues
-composer lint:fix       # arreglar automáticamente lo arreglable
+# Lint (WordPress-Extra ruleset)
+composer lint
+composer lint:fix
 
-# Tests
-composer test           # PHPUnit (unitarios; WIP)
-composer test:focused   # Tests dedicados bugs concretos (requiere WP running)
-composer test:suite     # Suite e2e completa 200 tests (requiere WP + TPV)
+# Tests unitarios (PHPUnit, sin WP)
+composer test
+
+# Tests e2e (requieren WP + TPV reales corriendo)
+composer test:focused        # bugs concretos
+composer test:suite          # suite completa 200 tests
 ```
 
-### Estructura
+## Flujo de sincronización
 
-```
-woocommerce-conector.php     # Bootstrap: hooks, activación, cron, rewrite
-includes/
-    class-admin.php          # UI admin (wizard + logs + diagnóstico)
-    class-api-client.php     # Cliente OAuth2 + retry + HMAC signing
-    class-circuit-breaker.php
-    class-cli.php            # Comandos wp tpv-sync *
-    class-notifications.php  # Alertas email/Slack/Telegram
-    class-order-sync.php     # WC↔TPV: pedidos, refunds, anti-bucle
-    class-product-sync.php   # WC↔TPV: productos, variantes, imágenes, stock
-    class-queue.php          # Fallback queue con backoff exponencial
-    class-secrets.php        # Cifrado libsodium de secrets
-    class-webhook-handler.php # Receptor con firma HMAC + idempotencia atómica
-tests/
-    e2e_api.php              # Endpoint dev-only para suites e2e externas
-    wp-stubs.php             # Stubs WP/WC para tests unitarios
-    run_cazabugs*.php        # Tests internos con stubs
-.memoria_wp/
-    tests/
-        cazabugs_200_wp.sh   # Suite e2e 200 tests (bash)
-        bugs_focused.sh      # Tests TDD para bugs concretos
-    findings/
-        BUGS_WC_*.md         # Análisis de bugs encontrados
-        FIXES_APLICADOS_*.md # Documentación de fixes aplicados
-docs/
-    PLUGIN_DEVELOPER.md      # Guía para desarrolladores
-```
+### Productos WC → TPV
 
-### Flujo de sincronización
+Hooks `woocommerce_new_product`, `woocommerce_update_product`, `wp_trash_post`:
 
-**Productos WC → TPV** (hooks `woocommerce_new_product`, `woocommerce_update_product`, `wp_trash_post`, etc.):
-1. `push_wc_product_to_tpv()` busca `_tpv_product_id` meta.
-2. Si existe → `PATCH /products/{id}`. Si no → busca por `model`/`sku` para reconciliar. Si no → `POST /products`.
-3. Stock se propaga en un hook dedicado (`push_wc_stock_change`) vía `PATCH /products/{id}/stock` con delta.
+1. `push_wc_product_to_tpv()` lee `_tpv_product_id` meta del post.
+2. Si existe → `PATCH /products/{id}` con `name`, `description`, `price`, `tax_class_id` (mapeado), `status`. Si responde 404 (mapping huérfano tras reset del TPV) → borra el meta y cae al flujo de creación.
+3. Si no existe → busca por `model`/`sku` en el cache del catálogo TPV para reconciliar. Si no se encuentra → `POST /products`.
+4. Tras crear/actualizar: subir imagen destacada (`is_main=true`) + galería con `image_url` (anti-SSRF por `allowed_domain`). Idempotente vía meta `_tpv_images_sent`.
+5. Variantes: `build_options_for_tpv` genera la estructura `options[]` que la API entiende. 1 atributo → directo. >1 atributo → aplana combinaciones reales con guion (`xs-rojo`, `s-verde`).
 
-**Webhooks TPV → WC** (endpoint `/tpv-webhook/`):
-1. Verifica firma HMAC-SHA256 y versión.
-2. Idempotencia atómica: `INSERT IGNORE` sobre tabla `wp_tpv_sync_webhook_idem` (PK UNIQUE).
-3. Si `affected_rows=0` → ya procesado, responde `duplicate: true`.
-4. Si no → procesa async (`fastcgi_finish_request`) y dispatcha por `event_type`.
+### Webhooks TPV → WC
 
-### Tests e2e
+Endpoint `/tpv-webhook/` registrado vía rewrite rule:
 
-La suite `.memoria_wp/tests/cazabugs_200_wp.sh` ejecuta 200 tests contra una instancia WP real (por defecto `https://tpv85.catinfog.com`) con TPV API también real. Cubre 20 áreas (config, auth, circuit breaker, CRUD productos, variantes, webhooks de todos los tipos, queue, pedidos, refunds, integridad/race).
+1. Verifica firma HMAC-SHA256 y versión del payload.
+2. **Idempotencia atómica**: `INSERT IGNORE` sobre tabla `wp_tpv_sync_webhook_idem` (PK única en `idempotency_key`).
+3. Si `affected_rows=0` → ya procesado, responde `{duplicate: true}`.
+4. Si no → procesa async (`fastcgi_finish_request`) y dispatcha por `event_type`: `product.updated`, `stock.adjusted`, `order.payment_changed`, `return.created`, etc.
 
-Requiere:
-- `define('TPV_SYNC_E2E_ENABLED', true)` en `wp-config.php`.
-- Endpoint `tests/e2e_api.php` accesible con header `X-Test-Secret` (secret auto-generado en opción `tpv_sync_e2e_trigger_secret`).
+## Mapeo de impuestos
 
-El endpoint NUNCA se habilita en `WP_ENVIRONMENT_TYPE=production`.
+`Catinfog Conector → Impuestos` en el admin de WP.
 
-### Observabilidad
+- Tabla con todas las clases fiscales WC (Standard implícita + custom).
+- Por cada una, dropdown con clases del TPV. Default "Sin impuestos".
+- AJAX `tpv_sync_load_tax_mapping` carga las clases TPV via `GET /tax-classes` (cacheado 24h).
+- Almacenamiento en `wp_options.tpv_sync_tax_class_mapping` como JSON-safe array (slug → tax_class_id).
 
-- Tabla `wp_tpv_sync_log` con todos los eventos (event_type, resource, resource_id, status, message).
-- Exportación: `wp tpv-sync export-logs --days=7 --status=error`.
-- Notificaciones horarias evalúan: queue abandoned, breaker open, TPV unreachable.
+Banner crítico se muestra al entrar al panel si:
+- `woocommerce_calc_taxes=yes` + `wp_woocommerce_tax_rates` vacía → ventas web sin IVA mientras TPV sí cobra IVA.
+- Adicionalmente `prices_include_tax=yes` → riesgo de **doble IVA** porque WC no puede descontar el bruto.
 
-### Convenciones
+## Observabilidad
 
-- Naming de clases: `TPV_Sync_*` (prefijo corto + Pascal).
-- Fichero por clase: `class-*.php` (convención WP).
-- `declare(strict_types=1)` en todos los ficheros.
-- Metas de WC: `_tpv_product_id`, `_tpv_option_value_id`, `_tpv_order_id`, `_tpv_customer_id`, `_tpv_status_origin`, `_tpv_refund_origin`, `_tpv_refund_synced`.
+- Tabla `wp_tpv_sync_log` con todos los eventos (event_type, resource, resource_id, status, message, timestamp).
+- Tab "Log" en el admin con filtros (todos / pendientes / abandonados / completados).
+- Exportación CLI: `wp tpv-sync export-logs --days=7 --status=error`.
+- Notificaciones horarias evalúan reglas: queue abandoned, breaker open, TPV unreachable, ratio de errores > umbral.
 
-### Licencia
+## Convenciones de código
+
+- Clases: prefijo `TPV_Sync_*` (Pascal con guiones bajos, convención plugin WP).
+- Un fichero por clase: `class-*.php`.
+- `declare(strict_types=1)` en todos los ficheros PHP.
+- Metas WC: `_tpv_product_id`, `_tpv_option_value_id`, `_tpv_order_id`, `_tpv_customer_id`, `_tpv_status_origin`, `_tpv_refund_origin`, `_tpv_refund_synced`, `_tpv_images_sent`.
+- Text domain: `tpv-sync`.
+
+## Licencia
 
 GPLv2 o posterior.
