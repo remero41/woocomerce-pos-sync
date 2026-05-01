@@ -251,6 +251,11 @@ class TPV_Sync_API_Client
             tpv_sync_module_orders()  ? 'order.payment_changed' : null,
             tpv_sync_module_orders()  ? 'return.created'        : null,
             tpv_sync_module_orders()  ? 'return.deleted'        : null,
+            // Clientes: siempre suscritos (no hay módulo separado, los
+            // clientes son transversales y la mayoría de tiendas los quieren).
+            'customer.created',
+            'customer.updated',
+            'customer.deleted',
         ]));
         $r = $this->post('/webhooks', [
             'url'    => home_url('/tpv-webhook/'),

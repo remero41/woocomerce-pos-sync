@@ -23,6 +23,7 @@ require_once TPV_SYNC_DIR . 'includes/class-circuit-breaker.php';
 require_once TPV_SYNC_DIR . 'includes/class-api-client.php';
 require_once TPV_SYNC_DIR . 'includes/class-product-sync.php';
 require_once TPV_SYNC_DIR . 'includes/class-order-sync.php';
+require_once TPV_SYNC_DIR . 'includes/class-customer-sync.php';
 require_once TPV_SYNC_DIR . 'includes/class-webhook-handler.php';
 require_once TPV_SYNC_DIR . 'includes/class-queue.php';
 require_once TPV_SYNC_DIR . 'includes/class-notifications.php';
@@ -51,11 +52,12 @@ class TPV_Sync
 {
     private static ?TPV_Sync $instance = null;
 
-    public TPV_Sync_API_Client   $api;
-    public TPV_Sync_Product_Sync $products;
-    public TPV_Sync_Order_Sync   $orders;
-    public TPV_Sync_Webhook      $webhooks;
-    public TPV_Sync_Queue        $queue;
+    public TPV_Sync_API_Client    $api;
+    public TPV_Sync_Product_Sync  $products;
+    public TPV_Sync_Order_Sync    $orders;
+    public TPV_Sync_Customer_Sync $customers;
+    public TPV_Sync_Webhook       $webhooks;
+    public TPV_Sync_Queue         $queue;
 
     public static function instance(): self
     {
@@ -67,11 +69,12 @@ class TPV_Sync
 
     private function __construct()
     {
-        $this->api      = new TPV_Sync_API_Client();
-        $this->products = new TPV_Sync_Product_Sync($this->api);
-        $this->orders   = new TPV_Sync_Order_Sync($this->api);
-        $this->webhooks = new TPV_Sync_Webhook($this->products, $this->orders);
-        $this->queue    = new TPV_Sync_Queue($this->api, $this->products, $this->orders);
+        $this->api       = new TPV_Sync_API_Client();
+        $this->products  = new TPV_Sync_Product_Sync($this->api);
+        $this->orders    = new TPV_Sync_Order_Sync($this->api);
+        $this->customers = new TPV_Sync_Customer_Sync($this->api);
+        $this->webhooks  = new TPV_Sync_Webhook($this->products, $this->orders);
+        $this->queue     = new TPV_Sync_Queue($this->api, $this->products, $this->orders);
 
         // Webhook endpoint TPV → WC (siempre activo si hay credenciales)
         add_action('init',               [$this, 'register_webhook_endpoint']);
@@ -111,6 +114,16 @@ class TPV_Sync
             // mantiene el histórico — ver ProductController::delete).
             add_action('before_delete_post',           [$this->products, 'push_wc_delete_to_tpv'],  10, 1);
         }
+
+        // ── Clientes WC → TPV ────────────────────────────────────────────────
+        // user_register dispara cuando se crea un user (front checkout, admin,
+        // signup). profile_update dispara en cada wp_update_user (cambio de
+        // email, nombre, billing_*, etc.). delete_user es self-explanatory.
+        // El plugin filtra dentro a usuarios con rol 'customer' para no
+        // empujar admins/editores/suscriptores genéricos al TPV.
+        add_action('user_register',  [$this->customers, 'push_wc_user_to_tpv'],        10, 1);
+        add_action('profile_update', [$this->customers, 'push_wc_user_to_tpv'],        10, 1);
+        add_action('delete_user',    [$this->customers, 'push_wc_user_delete_to_tpv'], 10, 1);
     }
 
     public function register_webhook_endpoint(): void
