@@ -22,6 +22,7 @@ class TPV_Sync_Admin
         add_action('wp_ajax_tpv_sync_count_remote',     [$this, 'ajax_count_remote']);
         add_action('wp_ajax_tpv_sync_load_tax_mapping', [$this, 'ajax_load_tax_mapping']);
         add_action('wp_ajax_tpv_sync_save_tax_mapping', [$this, 'ajax_save_tax_mapping']);
+        add_action('wp_ajax_tpv_sync_push_customers',   [$this, 'ajax_push_customers']);
         add_action('admin_notices', [$this, 'managed_product_banner']);
         add_action('admin_notices', [$this, 'tax_misconfig_banner']);
     }
@@ -1846,6 +1847,64 @@ class TPV_Sync_Admin
                     </div>
                 </div>
 
+                <div class="cc-adv-section">
+                    <h3><?= esc_html__('Sincronizar clientes', 'tpv-sync') ?></h3>
+                    <p class="cc-step-help"><?= esc_html__('Empuja todos los clientes WooCommerce al TPV. Los que ya existan en el TPV (mismo email) se reconectan automáticamente.', 'tpv-sync') ?></p>
+                    <div class="cc-adv-actions">
+                        <button type="button" class="button" id="cc-push-customers"><?= esc_html__('Enviar clientes al TPV', 'tpv-sync') ?></button>
+                        <span id="cc-push-customers-result" class="cc-result"></span>
+                    </div>
+                </div>
+
+                <script>
+                jQuery(function($) {
+                    var nonce = <?= json_encode(wp_create_nonce('tpv_sync')) ?>;
+                    var ajaxurl = <?= json_encode(admin_url('admin-ajax.php')) ?>;
+                    var $btn = $('#cc-push-customers');
+                    var $result = $('#cc-push-customers-result');
+
+                    function runOneBatch(reset) {
+                        return $.post(ajaxurl, {
+                            action: 'tpv_sync_push_customers',
+                            nonce: nonce,
+                            reset: reset ? 1 : 0,
+                            batch: 100
+                        });
+                    }
+
+                    function pushLoop(reset) {
+                        $btn.prop('disabled', true);
+                        $result.css('color', '#666').text(<?= json_encode(__('Procesando…', 'tpv-sync')) ?>);
+                        runOneBatch(reset).done(function(resp) {
+                            if (!resp.success) {
+                                $result.css('color', '#d63638').text(resp.data || 'error');
+                                $btn.prop('disabled', false);
+                                return;
+                            }
+                            var d = resp.data;
+                            var msg = (d.accumulated.sent || 0) + '/' + (d.total || 0)
+                                + ' (' + (d.accumulated.created || 0) + ' creados, '
+                                + (d.accumulated.matched || 0) + ' reconectados, '
+                                + (d.accumulated.skipped || 0) + ' saltados, '
+                                + (d.accumulated.errors || 0) + ' errores)';
+                            $result.text(msg);
+                            if (d.done) {
+                                $result.css('color', '#1c7c4a');
+                                $btn.prop('disabled', false);
+                            } else {
+                                // Siguiente batch sin reset
+                                setTimeout(function() { pushLoop(false); }, 200);
+                            }
+                        }).fail(function() {
+                            $result.css('color', '#d63638').text(<?= json_encode(__('Error de red', 'tpv-sync')) ?>);
+                            $btn.prop('disabled', false);
+                        });
+                    }
+
+                    $btn.on('click', function() { pushLoop(true); });
+                });
+                </script>
+
                 <?php if ($opSubState === 'ok'): ?>
                 <div class="cc-adv-section">
                     <h3><?= esc_html__('Diagnóstico', 'tpv-sync') ?></h3>
@@ -2899,6 +2958,9 @@ class TPV_Sync_Admin
                     tpv_sync_module_orders()  ? 'order.payment_changed' : null,
                     tpv_sync_module_orders()  ? 'return.created'        : null,
                     tpv_sync_module_orders()  ? 'return.deleted'        : null,
+                    'customer.created',
+                    'customer.updated',
+                    'customer.deleted',
                 ])),
             ]);
 
@@ -3174,5 +3236,71 @@ class TPV_Sync_Admin
 
         update_option('tpv_sync_tax_class_mapping', $clean, false);
         wp_send_json_success(['mapping' => $clean]);
+    }
+
+    /**
+     * Bulk push de clientes WC al TPV. Procesa por lotes con offset
+     * persistido en options para soportar catálogos grandes sin timeout.
+     *
+     * Body POST:
+     *   - reset=1   resetea offset a 0 (nueva ejecución).
+     *   - batch=100 tamaño del lote (default 100, max 500).
+     *
+     * Response:
+     *   {processed, sent, created, matched, skipped, errors,
+     *    offset_next, total, done:bool}
+     */
+    public function ajax_push_customers(): void
+    {
+        check_ajax_referer('tpv_sync', 'nonce');
+        if (!current_user_can('manage_woocommerce')) {
+            wp_send_json_error(__('Permission denied', 'tpv-sync'), 403);
+        }
+
+        $reset = !empty($_POST['reset']);
+        $batch = max(1, min(500, (int)($_POST['batch'] ?? 100)));
+
+        if ($reset) {
+            delete_option('tpv_sync_push_customers_offset');
+            delete_option('tpv_sync_push_customers_stats');
+        }
+        $offset = (int) get_option('tpv_sync_push_customers_offset', 0);
+
+        // Total de usuarios con rol customer (para barra de progreso).
+        global $wpdb;
+        $total = (int) $wpdb->get_var(
+            "SELECT COUNT(DISTINCT u.ID)
+             FROM {$wpdb->users} u
+             JOIN {$wpdb->usermeta} m ON m.user_id = u.ID
+                 AND m.meta_key = '{$wpdb->prefix}capabilities'
+                 AND m.meta_value LIKE '%customer%'"
+        );
+
+        $sync = TPV_Sync::instance();
+        $stats = method_exists($sync, 'customers') || isset($sync->customers)
+            ? $sync->customers->push_all_wc_users($batch, $offset)
+            : ['sent' => 0, 'created' => 0, 'matched' => 0, 'skipped' => 0, 'errors' => 0];
+
+        $processed = $stats['sent'] + $stats['skipped'] + $stats['errors'];
+        $offsetNext = $offset + $batch;
+        $done = ($offsetNext >= $total);
+
+        update_option('tpv_sync_push_customers_offset', $done ? 0 : $offsetNext, false);
+
+        // Acumulado total de la ejecución (suma de todos los batches).
+        $accumulated = (array) get_option('tpv_sync_push_customers_stats', []);
+        foreach ($stats as $k => $v) {
+            $accumulated[$k] = (int)($accumulated[$k] ?? 0) + (int)$v;
+        }
+        update_option('tpv_sync_push_customers_stats', $accumulated, false);
+
+        wp_send_json_success([
+            'processed_batch' => $processed,
+            'batch'           => $stats,
+            'accumulated'     => $accumulated,
+            'offset_next'     => $done ? 0 : $offsetNext,
+            'total'           => $total,
+            'done'            => $done,
+        ]);
     }
 }

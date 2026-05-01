@@ -337,13 +337,26 @@ class TPV_Sync_Webhook
                     break;
 
                 // ── Clientes ────────────────────────────────────────────────
+                // Anti-bucle: activar la guardia para que los hooks WC
+                // (user_register/profile_update) NO re-empujen al TPV
+                // mientras el receptor escribe en wp_users desde el TPV.
                 case 'customer.created':
                 case 'customer.updated':
-                    $this->products->sync_customer_from_tpv($resourceId, $fields);
+                    $GLOBALS['tpv_sync_skip_wc_customer_push'] = true;
+                    try {
+                        $this->products->sync_customer_from_tpv($resourceId, $fields);
+                    } finally {
+                        $GLOBALS['tpv_sync_skip_wc_customer_push'] = false;
+                    }
                     break;
 
                 case 'customer.deleted':
-                    $this->products->delete_wc_customer_by_tpv_id($resourceId);
+                    $GLOBALS['tpv_sync_skip_wc_customer_push'] = true;
+                    try {
+                        $this->products->delete_wc_customer_by_tpv_id($resourceId);
+                    } finally {
+                        $GLOBALS['tpv_sync_skip_wc_customer_push'] = false;
+                    }
                     break;
 
                 // ── Categorías ─────────────────────────────────────────────
