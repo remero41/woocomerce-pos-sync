@@ -8,7 +8,7 @@
 
     <!-- Exclude third-party and generated code -->
     <exclude-pattern>tests/*</exclude-pattern>
-    <exclude-pattern>.memoria_wp/*</exclude-pattern>
+    <exclude-pattern>dev-tools/*</exclude-pattern>
     <exclude-pattern>vendor/*</exclude-pattern>
     <exclude-pattern>languages/*</exclude-pattern>
     <exclude-pattern>docs/*</exclude-pattern>
