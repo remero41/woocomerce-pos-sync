@@ -1,0 +1,40 @@
+version: 2
+updates:
+  # Composer dev-deps (PHPUnit, PHPStan, PHPCS, stubs)
+  - package-ecosystem: "composer"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "composer"
+    # PHPUnit major bumps suelen tener breaking changes
+    groups:
+      dev-tools-minor:
+        patterns:
+          - "phpunit/*"
+          - "phpstan/*"
+          - "squizlabs/*"
+          - "dealerdirect/*"
+          - "wp-coding-standards/*"
+          - "php-stubs/*"
+          - "szepeviktor/*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    commit-message:
+      prefix: "chore(ci)"
+    labels:
+      - "dependencies"
+      - "github-actions"

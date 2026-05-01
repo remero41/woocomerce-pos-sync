@@ -1,0 +1,67 @@
+name: Security (SAST)
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master]
+  schedule:
+    # Run weekly on Monday at 03:00 UTC to catch new CVEs in deps
+    - cron: '0 3 * * 1'
+
+jobs:
+  semgrep:
+    name: Semgrep SAST
+    runs-on: ubuntu-latest
+    container:
+      image: returntocorp/semgrep
+
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Semgrep scan
+        run: |
+          semgrep scan \
+            --config=p/php \
+            --config=p/security-audit \
+            --config=p/owasp-top-ten \
+            --config=p/secrets \
+            --config=p/ci \
+            --sarif --output=semgrep.sarif \
+            --exclude=".memoria_wp" \
+            --exclude="vendor" \
+            --exclude="languages" \
+            --error
+
+      - name: Upload SARIF to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+  # Taint analysis específico para WordPress
+  wp-taint:
+    name: Psalm taint analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          tools: composer:v2
+
+      - name: Install deps
+        run: composer install --prefer-dist --no-progress
+
+      - name: Install psalm
+        run: composer require --dev vimeo/psalm humbug/psalm-plugin-wordpress --no-progress || true
+
+      - name: Run taint analysis
+        run: vendor/bin/psalm --taint-analysis --no-progress --show-info=false || true
