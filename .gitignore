@@ -5,6 +5,9 @@
 *.log
 *.sql.gz
 
+# Variables locales de tests dev (ver dev-tools/tests/.env.example)
+dev-tools/tests/.env
+
 # Archivos del entorno de desarrollo local
 .DS_Store
 .idea/

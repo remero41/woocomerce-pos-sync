@@ -1,25 +1,32 @@
 #!/usr/bin/env bash
 # Tests focalizados que reproducen BUG-WC-001 y BUG-WC-003.
 # Antes del fix: ambos FAIL. Después: ambos PASS.
+#
+# Variables de entorno requeridas: ver dev-tools/tests/cazabugs_200_wp.sh
 set -u
 
-BASE="https://tu-tienda.ejemplo.com/wp-content/plugins/woocommerce_conector/tests/e2e_api.php"
-SECRET="9ac41a8357d5260fe02a8ef6cdf986e96ab516c3d0bb2cde000a94a87cbd1d65"
-WEBHOOK_URL="https://tu-tienda.ejemplo.com/tpv-webhook/"
+BASE="${TPV_SYNC_E2E_BASE:?Set TPV_SYNC_E2E_BASE}"
+SECRET="${TPV_SYNC_E2E_SECRET:?Set TPV_SYNC_E2E_SECRET}"
+WEBHOOK_URL="${TPV_SYNC_WEBHOOK_URL:?Set TPV_SYNC_WEBHOOK_URL}"
+WP_ABSPATH="${TPV_SYNC_WP_ABSPATH:?Set TPV_SYNC_WP_ABSPATH}"
+DB_USER="${TPV_SYNC_DB_USER:?Set TPV_SYNC_DB_USER}"
+DB_PASS="${TPV_SYNC_DB_PASS:?Set TPV_SYNC_DB_PASS}"
+DB_NAME="${TPV_SYNC_DB_NAME:?Set TPV_SYNC_DB_NAME}"
+
 # Leemos el secret en runtime para no descuadrarnos cuando el plugin
 # re-registra el webhook (self-healing, reconectar, regen…).
-WEBHOOK_SECRET=$(php -r '
-define("ABSPATH","/ruta/a/tu/wordpress/");
-$_SERVER["HTTP_HOST"]="tu-tienda.ejemplo.com";
-$_SERVER["REQUEST_URI"]="/wp-admin/";
-require ABSPATH."wp-load.php";
-echo (string)get_option("tpv_sync_webhook_secret","");
-' 2>/dev/null)
-[ -z "$WEBHOOK_SECRET" ] && WEBHOOK_SECRET="0f07c1a065aa05ae199b74631ece369e86b114a6568f7e4a0a0d0672798a4e24"
+WEBHOOK_SECRET=$(php -r "
+define('ABSPATH','$WP_ABSPATH');
+\$_SERVER['HTTP_HOST']=parse_url('$BASE', PHP_URL_HOST);
+\$_SERVER['REQUEST_URI']='/wp-admin/';
+require ABSPATH.'wp-load.php';
+echo (string)get_option('tpv_sync_webhook_secret','');
+" 2>/dev/null)
+[ -z "$WEBHOOK_SECRET" ] && WEBHOOK_SECRET="${TPV_SYNC_WEBHOOK_SECRET_FALLBACK:-}"
 
 call() { curl -sk -H "X-Test-Secret: $SECRET" "$BASE?$1" --max-time 60 2>/dev/null; }
-psql_n() { mysql -uroot -p***REMOVED*** la-instalacion-de-pruebas -N -e "$1" 2>/dev/null; }
-psql_r() { mysql -uroot -p***REMOVED*** la-instalacion-de-pruebas -e "$1" 2>/dev/null; }
+psql_n() { mysql -u"$DB_USER" -p"$DB_PASS" "$DB_NAME" -N -e "$1" 2>/dev/null; }
+psql_r() { mysql -u"$DB_USER" -p"$DB_PASS" "$DB_NAME" -e "$1" 2>/dev/null; }
 jq_f() { echo "$1" | jq -r "$2" 2>/dev/null; }
 
 send_webhook_raw() {

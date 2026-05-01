@@ -1,28 +1,42 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Caza bugs WP: 200 tests e2e sobre el plugin woocommerce_conector (la-instalacion-de-pruebas)
+# Caza bugs WP: 200 tests e2e sobre el plugin woocommerce_conector
 # =============================================================================
 # Cada test imprime "✔" (PASS) o "✖" (FAIL) con el motivo. Resumen por área final.
-# Requisitos: WP85 (tu-tienda.ejemplo.com) + TPV API (tu-tpv.ejemplo.com) accesibles.
-# Plantilla basada en cazabugs_100.sh de PrestaShop (tpv100).
+# Requisitos: WP + TPV API accesibles + WP-CLI / mysql en local.
+# Plantilla basada en cazabugs_100.sh de PrestaShop.
+#
+# Variables de entorno requeridas:
+#   TPV_SYNC_E2E_BASE        URL completa al endpoint dev e2e_api.php
+#   TPV_SYNC_E2E_SECRET      Secret X-Test-Secret (ver wp_options.tpv_sync_e2e_trigger_secret)
+#   TPV_SYNC_WEBHOOK_URL     URL del webhook (ej. https://miweb.com/tpv-webhook/)
+#   TPV_SYNC_WP_ABSPATH      Path absoluto al WordPress local (para wp-load.php)
+#   TPV_SYNC_DB_USER         Usuario MySQL local
+#   TPV_SYNC_DB_PASS         Password MySQL local
+#   TPV_SYNC_DB_NAME         Nombre de la BD WordPress
+#
+# Opcional:
+#   TPV_SYNC_WEBHOOK_SECRET_FALLBACK  Fallback si la opción del plugin está vacía
 set -u
 
-BASE="https://tu-tienda.ejemplo.com/wp-content/plugins/woocommerce_conector/tests/e2e_api.php"
-SECRET="9ac41a8357d5260fe02a8ef6cdf986e96ab516c3d0bb2cde000a94a87cbd1d65"
-WEBHOOK_URL="https://tu-tienda.ejemplo.com/tpv-webhook/"
+BASE="${TPV_SYNC_E2E_BASE:?Set TPV_SYNC_E2E_BASE (URL al endpoint e2e_api.php)}"
+SECRET="${TPV_SYNC_E2E_SECRET:?Set TPV_SYNC_E2E_SECRET (X-Test-Secret de tu instalación)}"
+WEBHOOK_URL="${TPV_SYNC_WEBHOOK_URL:?Set TPV_SYNC_WEBHOOK_URL (URL del receptor /tpv-webhook/)}"
+WP_ABSPATH="${TPV_SYNC_WP_ABSPATH:?Set TPV_SYNC_WP_ABSPATH (path absoluto al WordPress local con / final)}"
+
 # Leemos el secret en runtime para no descuadrarnos cuando el plugin
 # re-registra el webhook (self-healing, reconectar, regen…).
-WEBHOOK_SECRET=$(php -r '
-define("ABSPATH","/ruta/a/tu/wordpress/");
-$_SERVER["HTTP_HOST"]="tu-tienda.ejemplo.com";
-$_SERVER["REQUEST_URI"]="/wp-admin/";
-require ABSPATH."wp-load.php";
-echo (string)get_option("tpv_sync_webhook_secret","");
-' 2>/dev/null)
-[ -z "$WEBHOOK_SECRET" ] && WEBHOOK_SECRET="0f07c1a065aa05ae199b74631ece369e86b114a6568f7e4a0a0d0672798a4e24"
-DB_USER=root
-DB_PASS=***REMOVED***
-DB_NAME=la-instalacion-de-pruebas
+WEBHOOK_SECRET=$(php -r "
+define('ABSPATH','$WP_ABSPATH');
+\$_SERVER['HTTP_HOST']=parse_url('$BASE', PHP_URL_HOST);
+\$_SERVER['REQUEST_URI']='/wp-admin/';
+require ABSPATH.'wp-load.php';
+echo (string)get_option('tpv_sync_webhook_secret','');
+" 2>/dev/null)
+[ -z "$WEBHOOK_SECRET" ] && WEBHOOK_SECRET="${TPV_SYNC_WEBHOOK_SECRET_FALLBACK:-}"
+DB_USER="${TPV_SYNC_DB_USER:?Set TPV_SYNC_DB_USER}"
+DB_PASS="${TPV_SYNC_DB_PASS:?Set TPV_SYNC_DB_PASS}"
+DB_NAME="${TPV_SYNC_DB_NAME:?Set TPV_SYNC_DB_NAME}"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 call() {
@@ -124,7 +138,8 @@ addcleanup() { CLEANUP_POSTS+=("$1"); }
 echo "── A. Config / Auth / Health API ──"
 
 R=$(call "action=check_config")
-assert_eq "A01" "api_url presente" "https://tu-tpv.ejemplo.com/api/v1" "$(jq_f "$R" '.api_url')"
+EXPECTED_API_URL="${TPV_SYNC_EXPECTED_API_URL:?Set TPV_SYNC_EXPECTED_API_URL (URL de la API del TPV configurada en el plugin, ej. https://tpv.miweb.com/api/v1)}"
+assert_eq "A01" "api_url presente" "$EXPECTED_API_URL" "$(jq_f "$R" '.api_url')"
 assert_eq "A02" "client_id = woocommerce" "woocommerce" "$(jq_f "$R" '.client_id')"
 assert_eq "A03" "tiene client_secret" "true" "$(jq_f "$R" '.has_secret')"
 assert_eq "A04" "tiene webhook_secret" "true" "$(jq_f "$R" '.has_webhook_secret')"
