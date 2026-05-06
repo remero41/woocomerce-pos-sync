@@ -43,62 +43,85 @@ El plugin actúa como cliente OAuth2 contra la API REST del TPV (módulo `api/v1
 ## Estructura del repo
 
 ```
-woocommerce-conector.php         # Bootstrap: hooks, activación, cron, rewrite
-includes/                        # Plugin (lo que se distribuye)
-    class-admin.php                  UI admin (wizard, tabs Inicio/Impuestos/Log,
-                                     banners de configuración fiscal)
-    class-api-client.php             Cliente HTTP con OAuth2, HMAC, circuit
-                                     breaker, auto-recovery, X-Price-Format
-    class-circuit-breaker.php
-    class-cli.php                    Comandos `wp tpv-sync *`
-    class-notifications.php          Alertas email + DLQ
-    class-order-sync.php             WC↔TPV pedidos: refunds, cupones, anti-bucle
-    class-product-sync.php           WC↔TPV productos, variantes, imágenes,
-                                     stock, mapeo de impuestos, gross→net
-    class-queue.php                  Fallback queue con backoff exponencial
-    class-secrets.php                Cifrado libsodium de secrets
-    class-webhook-handler.php        Receptor HMAC + idempotencia atómica
-tests/                           # Tests del plugin distribuible
-    unit/                            PHPUnit (Queue, CircuitBreaker, Secrets,
-                                     WebhookSignature, options flatten + tax mapping)
-    e2e_api.php                      Endpoint dev-only (gated TPV_SYNC_E2E_ENABLED)
-    wp-stubs.php                     Stubs WP/WC para tests aislados
-    run_cazabugs*.php                Suites cazabugs internas
-docs/
-    PLUGIN_DEVELOPER.md              Guía para desarrolladores
-languages/                       # i18n (.po + .mo: es_ES, en_US, fr_FR)
-.github/workflows/               # CI: phpcs, phpstan, phpunit, security scan
+woocommerce-conector/             # ⚑ El plugin que se distribuye en WP.org
+    woocommerce-conector.php          Bootstrap: hooks, activación, cron, rewrite
+    readme.txt                        Readme estilo WP.org
+    CHANGELOG.md
+    includes/
+        class-admin.php                  UI admin (wizard, tabs, DLQ panel)
+        class-api-client.php             OAuth2, HMAC, circuit breaker
+        class-circuit-breaker.php
+        class-cli.php                    Comandos `wp tpv-sync *`
+        class-customer-sync.php          WC↔TPV clientes (signup/edit/delete)
+        class-notifications.php          Alertas email
+        class-order-sync.php             WC↔TPV pedidos: refunds, cupones
+        class-product-sync.php           WC↔TPV productos, variantes, imágenes
+        class-queue.php                  Fallback queue con backoff
+        class-secrets.php                Cifrado libsodium de secrets
+        class-webhook-handler.php        Receptor HMAC + idempotencia + DLQ
+    assets/                           Imágenes del admin
+    languages/                        i18n (.po + .mo: es_ES, en_US, fr_FR)
+    tests/                            Endpoints HTTP dev-only que viajan con
+                                      el plugin (gated por TPV_SYNC_E2E_ENABLED)
+        e2e_api.php
+        e2e_trigger.php
 
-dev-tools/                       # Recursos internos NO distribuidos en WP.org
-    findings/                        Análisis de bugs encontrados durante caza
-        BUGS_WC_001_006.md
-        FIXES_APLICADOS_2026-04-24.md
-    tests/                           Scripts e2e contra entorno real
-        cazabugs_200_wp.sh           Suite 200 tests bash sobre WP+TPV reales
-        bugs_focused.sh              Tests TDD para bugs concretos
-        README.md                    Documentación de la suite
+.memoria_plugin_wordpress/        # Recursos NO distribuidos en WP.org
+    composer.json, phpcs.xml, phpstan.neon, phpunit.xml.dist, infection.json5
+    tests/
+        unit/                            PHPUnit (Queue, CircuitBreaker, Secrets,
+                                         WebhookSignature, options flatten,
+                                         tax mapping)
+        dlq_e2e.php                      DLQ contra wpdb real
+        customers_e2e_full.php           Sync clientes contra ambas BDs
+        cazabugs_wc.php
+        run_cazabugs*.php                Suites cazabugs (PHP)
+        run_sprint*.php
+        wp-stubs.php                     Stubs WP/WC para tests aislados
+    dev-tools/
+        findings/                        Análisis de bugs encontrados
+        tests/
+            cazabugs_200_wp.sh           Suite 200 tests bash sobre WP+TPV
+            bugs_focused.sh              Tests TDD para bugs concretos
+            README.md
+            .env.example
+    docs/
+        PLUGIN_DEVELOPER.md              Guía para desarrolladores
+
+.github/workflows/                # CI: phpcs, phpstan, phpunit, semgrep
+README.md                         # Este fichero
+.gitignore
 ```
 
 ## Setup local
 
 ```bash
-# Instala dev-tools
-composer install
+# Todas las herramientas de dev viven en .memoria_plugin_wordpress/
+cd .memoria_plugin_wordpress
 
-# Análisis estático (PHPStan level 5)
-composer analyze
-
-# Lint (WordPress-Extra ruleset)
-composer lint
+composer install                  # Instala dev-tools
+composer analyze                  # PHPStan level 5
+composer lint                     # PHPCS (WordPress-Extra)
 composer lint:fix
-
-# Tests unitarios (PHPUnit, sin WP)
-composer test
-
-# Tests e2e (requieren WP + TPV reales corriendo)
-composer test:focused        # bugs concretos
-composer test:suite          # suite completa 200 tests
+composer test                     # PHPUnit unit tests
+composer test:focused             # Bugs concretos (requiere WP+TPV reales)
+composer test:suite               # Suite completa 200 tests bash
 ```
+
+## Despliegue
+
+Sólo el directorio `woocommerce-conector/` se copia al servidor WP. Por
+ejemplo, para desplegar a `tu_bd`:
+
+```bash
+rsync -av --delete woocommerce-conector/ \
+    /ruta/a/tu/wordpress/wp-content/plugins/woocommerce_conector/
+```
+
+Nota: WP usa la carpeta `woocommerce_conector` (guion bajo) en
+`wp-content/plugins/` por compatibilidad histórica del slug. El repo usa
+`woocommerce-conector` (guion) por consistencia con el nombre del fichero
+principal.
 
 ## Flujo de sincronización
 

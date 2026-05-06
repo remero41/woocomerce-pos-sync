@@ -14,7 +14,7 @@ class WebhookSignatureTest extends TestCase
     public static function setUpBeforeClass(): void
     {
         require_once __DIR__ . '/stubs.php';
-        require_once __DIR__ . '/../../includes/class-webhook-handler.php';
+        require_once __DIR__ . '/../../../woocommerce-conector/includes/class-webhook-handler.php';
     }
 
     private const SECRET = '0123456789abcdef0123456789abcdef';
@@ -80,7 +80,7 @@ class WebhookSignatureTest extends TestCase
     {
         // Este test sólo verifica que verify_signature NO usa === sino hash_equals.
         // No podemos medir timing aquí, pero sí chequear el código fuente.
-        $src = file_get_contents(__DIR__ . '/../../includes/class-webhook-handler.php');
+        $src = file_get_contents(__DIR__ . '/../../../woocommerce-conector/includes/class-webhook-handler.php');
         $this->assertStringContainsString('hash_equals', $src,
             'verify_signature debe usar hash_equals (timing-safe), no === (vulnerable a timing attacks).');
     }

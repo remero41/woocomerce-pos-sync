@@ -19,7 +19,8 @@
  *   op=delete  → before_delete_post         hook
  */
 
-// Cargar WordPress
+// Cargar WordPress: este fichero se despliega como wp-content/plugins/
+// woocommerce-conector/tests/e2e_trigger.php — wp-load.php está 4 niveles arriba.
 $wpLoad = dirname(__DIR__, 4) . '/wp-load.php';
 if (!file_exists($wpLoad)) {
     http_response_code(500);

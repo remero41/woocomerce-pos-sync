@@ -61,13 +61,13 @@ if (!defined('MINUTE_IN_SECONDS')) define('MINUTE_IN_SECONDS', 60);
 if (!defined('ABSPATH'))         define('ABSPATH', __DIR__);
 if (!defined('TPV_SYNC_VERSION')) define('TPV_SYNC_VERSION', '1.2.0');
 
-require_once __DIR__ . '/../includes/class-secrets.php';
-require_once __DIR__ . '/../includes/class-circuit-breaker.php';
-require_once __DIR__ . '/../includes/class-queue.php';
-require_once __DIR__ . '/../includes/class-api-client.php';
-require_once __DIR__ . '/../includes/class-product-sync.php';
-require_once __DIR__ . '/../includes/class-order-sync.php';
-require_once __DIR__ . '/../includes/class-webhook-handler.php';
+require_once __DIR__ . '/../../woocommerce-conector/includes/class-secrets.php';
+require_once __DIR__ . '/../../woocommerce-conector/includes/class-circuit-breaker.php';
+require_once __DIR__ . '/../../woocommerce-conector/includes/class-queue.php';
+require_once __DIR__ . '/../../woocommerce-conector/includes/class-api-client.php';
+require_once __DIR__ . '/../../woocommerce-conector/includes/class-product-sync.php';
+require_once __DIR__ . '/../../woocommerce-conector/includes/class-order-sync.php';
+require_once __DIR__ . '/../../woocommerce-conector/includes/class-webhook-handler.php';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // A. SECRETS ENCRYPTION (6)

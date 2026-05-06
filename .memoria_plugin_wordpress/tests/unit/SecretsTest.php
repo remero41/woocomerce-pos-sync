@@ -20,7 +20,7 @@ class SecretsTest extends TestCase
         if (!defined('NONCE_KEY'))       define('NONCE_KEY',       'test-nonce-key-for-unit-tests');
         if (!defined('ABSPATH'))         define('ABSPATH', '/tmp/');
 
-        require_once __DIR__ . '/../../includes/class-secrets.php';
+        require_once __DIR__ . '/../../../woocommerce-conector/includes/class-secrets.php';
     }
 
     protected function setUp(): void

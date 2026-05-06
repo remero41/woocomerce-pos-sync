@@ -4,7 +4,7 @@
     // que los tests cazan la mayoría de mutaciones.
     "source": {
         "directories": [
-            "includes"
+            "../woocommerce-conector/includes"
         ],
         "excludes": [
             // class-api-client hace wp_remote_* y no tiene tests aislados aún

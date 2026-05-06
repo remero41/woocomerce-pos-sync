@@ -6,15 +6,15 @@ parameters:
     phpVersion: 80100
 
     paths:
-        - woocommerce-conector.php
-        - includes
+        - ../woocommerce-conector/woocommerce-conector.php
+        - ../woocommerce-conector/includes
 
     excludePaths:
         analyseAndScan:
             - tests/*
             - dev-tools/*
             - vendor/*
-            - languages/*
+            - ../woocommerce-conector/languages/*
 
     bootstrapFiles:
         - vendor/php-stubs/woocommerce-stubs/woocommerce-stubs.php

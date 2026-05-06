@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 use PHPUnit\Framework\TestCase;
 
-require_once __DIR__ . '/../../includes/class-circuit-breaker.php';
+require_once __DIR__ . '/../../../woocommerce-conector/includes/class-circuit-breaker.php';
 
 /**
  * Tests unitarios de TPV_Sync_Circuit_Breaker.

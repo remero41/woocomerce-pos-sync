@@ -31,7 +31,7 @@ class CB {
 }
 
 $t = new CB();
-$baseDir = __DIR__ . '/../';
+$baseDir = dirname(__DIR__, 2) . '/woocommerce-conector/';
 $adminSrc = file_get_contents($baseDir . 'includes/class-admin.php');
 $prodSrc  = file_get_contents($baseDir . 'includes/class-product-sync.php');
 $mainSrc  = file_get_contents($baseDir . 'woocommerce-conector.php');

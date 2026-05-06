@@ -35,7 +35,7 @@ class T2 {
     }
 }
 
-$p = dirname(__DIR__);
+$p = dirname(__DIR__, 2) . '/woocommerce-conector';
 require_once $p . '/includes/class-secrets.php';
 require_once $p . '/includes/class-circuit-breaker.php';
 require_once $p . '/includes/class-api-client.php';
