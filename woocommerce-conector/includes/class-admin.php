@@ -2546,10 +2546,18 @@ class TPV_Sync_Admin
             if (!$api->isConfigured()) {
                 wp_send_json_error('not_configured');
             }
-            // GET /products?per_page=1&count=1 → la respuesta incluye meta.total.
-            // Sin `count=1` la API devuelve total=null (cursor pagination evita
-            // el COUNT(*) por defecto para no penalizar performance).
-            $resp = $api->get('/products', ['per_page' => 1, 'count' => 1]);
+            // GET /products?per_page=1&count=1&status=1 → la respuesta incluye
+            // meta.total. Sin `count=1` la API devuelve total=null (cursor
+            // pagination evita el COUNT(*) por defecto para no penalizar
+            // performance).
+            //
+            // status=1: solo productos activos. Tiene que coincidir con el
+            // filtro que aplica import_all() en class-product-sync.php
+            // (que también usa status=1) — si la badge muestra 9978 pero
+            // el bulk procesa 6780, el cliente cree que el import se ha
+            // colgado. Los 3198 con status=0 son productos ocultos en el
+            // TPV que no queremos materializar como publicados en WC.
+            $resp = $api->get('/products', ['per_page' => 1, 'count' => 1, 'status' => 1]);
             $total = (int) ($resp['meta']['total'] ?? $resp['total'] ?? 0);
             wp_send_json_success(['total' => $total]);
         } catch (Throwable $e) {
