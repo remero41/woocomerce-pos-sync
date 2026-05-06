@@ -2245,6 +2245,143 @@ class TPV_Sync_Admin
                 <?php $this->render_queue_section(); ?>
             </div>
         </details>
+
+        <!-- DIAGNÓSTICO — Webhooks fallidos (DLQ) -->
+        <details class="cc-diag">
+            <summary><?= esc_html__('Diagnóstico avanzado: webhooks fallidos (DLQ)', 'tpv-sync') ?></summary>
+            <div class="cc-diag-body">
+                <?php $this->render_dlq_section(); ?>
+            </div>
+        </details>
+        <?php
+    }
+
+    /**
+     * Diagnóstico DLQ — webhooks que llegaron OK firma+idempotencia pero
+     * que fallaron al ejecutarse en el handler (excepción en upsert,
+     * stock, return, etc.). Sin esta UI no había forma de reintentarlos
+     * tras arreglar la causa subyacente.
+     */
+    private function render_dlq_section(): void
+    {
+        global $wpdb;
+        $t = TPV_Sync_Webhook::dlq_table_name();
+        $api = new TPV_Sync_API_Client();
+        $webhook = new TPV_Sync_Webhook(
+            new TPV_Sync_Product_Sync($api),
+            new TPV_Sync_Order_Sync($api),
+            $api
+        );
+
+        if (isset($_POST['tpv_dlq_action']) && wp_verify_nonce((string) ($_POST['tpv_sync_dlq_nonce'] ?? ''), 'tpv_sync_dlq')) {
+            $action = sanitize_key($_POST['tpv_dlq_action']);
+            $id     = (int) ($_POST['id'] ?? 0);
+            if ($action === 'replay' && $id > 0) {
+                $r = $webhook->dlq_replay($id);
+                if (!empty($r['ok'])) {
+                    echo '<div class="notice notice-success"><p>' . esc_html__('Evento reintentado con éxito.', 'tpv-sync') . '</p></div>';
+                } else {
+                    echo '<div class="notice notice-error"><p>' . esc_html(sprintf(__('Reintento falló: %s', 'tpv-sync'), $r['error'] ?? 'desconocido')) . '</p></div>';
+                }
+            } elseif ($action === 'replay_all') {
+                $r = $webhook->dlq_replay_all();
+                echo '<div class="notice notice-success"><p>' . esc_html(sprintf(
+                    __('Reintentados: %d · OK: %d · errores: %d', 'tpv-sync'),
+                    $r['attempted'], $r['ok'], $r['err']
+                )) . '</p></div>';
+            } elseif ($action === 'delete' && $id > 0) {
+                TPV_Sync_Webhook::dlq_delete($id);
+                echo '<div class="notice notice-success"><p>' . esc_html__('Entrada eliminada.', 'tpv-sync') . '</p></div>';
+            } elseif ($action === 'purge_replayed') {
+                $deleted = $wpdb->query("DELETE FROM $t WHERE status = 'replayed'");
+                echo '<div class="notice notice-success"><p>' . esc_html(sprintf(__('%d entradas replayed purgadas.', 'tpv-sync'), (int) $deleted)) . '</p></div>';
+            }
+        }
+
+        $stats = TPV_Sync_Webhook::dlq_stats();
+        $rows = $wpdb->get_results("SELECT * FROM $t ORDER BY id DESC LIMIT 100");
+        ?>
+        <p style="color:#64748b;font-size:13px;margin-top:0;">
+            <?= esc_html__('Webhooks que llegaron correctos (firma + no duplicados) pero fallaron al procesarse en WordPress. Reintenta cuando hayas arreglado la causa.', 'tpv-sync') ?>
+        </p>
+        <div style="display:flex;gap:12px;margin:12px 0;">
+            <?php foreach (['pending' => '#d94f4f', 'replayed' => '#2bb673'] as $key => $color): ?>
+                <div style="flex:1;padding:10px 12px;border-left:4px solid <?= esc_attr($color) ?>;background:#fff;box-shadow:0 1px 0 rgba(0,0,0,0.04);">
+                    <div style="font-size:11px;color:#666;text-transform:uppercase;"><?= esc_html(ucfirst($key)) ?></div>
+                    <div style="font-size:20px;font-weight:600;"><?= intval($stats[$key] ?? 0) ?></div>
+                </div>
+            <?php endforeach; ?>
+            <div style="flex:1;padding:10px 12px;border-left:4px solid #555;background:#fff;">
+                <div style="font-size:11px;color:#666;text-transform:uppercase;"><?= esc_html__('Total', 'tpv-sync') ?></div>
+                <div style="font-size:20px;font-weight:600;"><?= intval($stats['total']) ?></div>
+            </div>
+        </div>
+
+        <div style="margin:12px 0;display:flex;gap:6px;flex-wrap:wrap;">
+            <?php if (($stats['pending'] ?? 0) > 0): ?>
+            <form method="post" style="display:inline;" onsubmit="return confirm('<?= esc_js(__('¿Reintentar todos los webhooks pendientes?', 'tpv-sync')) ?>');">
+                <?php wp_nonce_field('tpv_sync_dlq', 'tpv_sync_dlq_nonce'); ?>
+                <input type="hidden" name="tpv_dlq_action" value="replay_all">
+                <button class="button button-primary button-small">🔁 <?= esc_html__('Reintentar todos los pendientes', 'tpv-sync') ?></button>
+            </form>
+            <?php endif; ?>
+            <?php if (($stats['replayed'] ?? 0) > 0): ?>
+            <form method="post" style="display:inline;" onsubmit="return confirm('<?= esc_js(__('¿Borrar las entradas replayed?', 'tpv-sync')) ?>');">
+                <?php wp_nonce_field('tpv_sync_dlq', 'tpv_sync_dlq_nonce'); ?>
+                <input type="hidden" name="tpv_dlq_action" value="purge_replayed">
+                <button class="button button-small"><?= esc_html__('Purgar replayed', 'tpv-sync') ?></button>
+            </form>
+            <?php endif; ?>
+        </div>
+
+        <table class="wp-list-table widefat striped" style="font-size:12px;">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th><?= esc_html__('Evento', 'tpv-sync') ?></th>
+                    <th><?= esc_html__('Recurso', 'tpv-sync') ?></th>
+                    <th><?= esc_html__('Estado', 'tpv-sync') ?></th>
+                    <th><?= esc_html__('Intentos', 'tpv-sync') ?></th>
+                    <th><?= esc_html__('Último error', 'tpv-sync') ?></th>
+                    <th><?= esc_html__('Recibido', 'tpv-sync') ?></th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+            <?php if (empty($rows)): ?>
+                <tr><td colspan="8" style="text-align:center;padding:20px;color:#999;"><?= esc_html__('Sin webhooks fallidos. ✓', 'tpv-sync') ?></td></tr>
+            <?php else: foreach ($rows as $r): ?>
+                <tr>
+                    <td><?= (int) $r->id ?></td>
+                    <td><code><?= esc_html($r->event_type) ?></code></td>
+                    <td><?= (int) $r->resource_id ?: '-' ?></td>
+                    <td>
+                        <?php $c = $r->status === 'pending' ? '#d94f4f' : '#2bb673'; ?>
+                        <span style="padding:2px 8px;border-radius:10px;background:<?= esc_attr($c) ?>;color:#fff;font-size:11px;"><?= esc_html($r->status) ?></span>
+                    </td>
+                    <td><?= (int) $r->attempts ?></td>
+                    <td style="max-width:280px;font-family:monospace;font-size:11px;color:#a00;"><?= esc_html(substr((string) $r->last_error, 0, 200)) ?></td>
+                    <td><?= esc_html((string) $r->created_at) ?></td>
+                    <td>
+                        <?php if ($r->status === 'pending'): ?>
+                        <form method="post" style="display:inline;">
+                            <?php wp_nonce_field('tpv_sync_dlq', 'tpv_sync_dlq_nonce'); ?>
+                            <input type="hidden" name="tpv_dlq_action" value="replay">
+                            <input type="hidden" name="id" value="<?= (int) $r->id ?>">
+                            <button class="button button-small" title="<?= esc_attr__('Reintentar ahora', 'tpv-sync') ?>">🔁</button>
+                        </form>
+                        <?php endif; ?>
+                        <form method="post" style="display:inline;" onsubmit="return confirm('<?= esc_js(__('¿Borrar?', 'tpv-sync')) ?>');">
+                            <?php wp_nonce_field('tpv_sync_dlq', 'tpv_sync_dlq_nonce'); ?>
+                            <input type="hidden" name="tpv_dlq_action" value="delete">
+                            <input type="hidden" name="id" value="<?= (int) $r->id ?>">
+                            <button class="button button-small button-link-delete">×</button>
+                        </form>
+                    </td>
+                </tr>
+            <?php endforeach; endif; ?>
+            </tbody>
+        </table>
         <?php
     }
 

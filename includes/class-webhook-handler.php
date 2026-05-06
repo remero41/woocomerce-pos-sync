@@ -46,6 +46,195 @@ class TPV_Sync_Webhook
     }
 
     /**
+     * Tabla DLQ (Dead Letter Queue) — webhooks que fallaron al procesarse
+     * tras pasar la verificación de firma + idempotencia. El handler real
+     * (TPV_Sync_Product_Sync, TPV_Sync_Order_Sync, ...) ha lanzado excepción.
+     *
+     * Sin esta tabla, los fallos en handlers se perdían en el log y el
+     * admin no tenía manera de reintentar. Con DLQ:
+     *   - Cada fallo queda guardado con su payload entero + error.
+     *   - El admin puede reintentar individualmente o en bulk.
+     *   - Cron puede auto-reintentar con backoff (futuro).
+     */
+    public static function dlq_table_name(): string
+    {
+        global $wpdb;
+        return $wpdb->prefix . 'tpv_sync_webhook_dlq';
+    }
+
+    public static function create_dlq_table(): void
+    {
+        global $wpdb;
+        $t       = self::dlq_table_name();
+        $charset = $wpdb->get_charset_collate();
+        $sql = "CREATE TABLE IF NOT EXISTS $t (
+            id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+            event_type      VARCHAR(64)     NOT NULL,
+            resource_id     INT UNSIGNED    NOT NULL DEFAULT 0,
+            idempotency_key VARCHAR(191)    NOT NULL DEFAULT '',
+            payload         LONGTEXT        NOT NULL,
+            last_error      TEXT            NOT NULL,
+            attempts        INT UNSIGNED    NOT NULL DEFAULT 1,
+            status          VARCHAR(16)     NOT NULL DEFAULT 'pending',
+            created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at      DATETIME        NULL DEFAULT NULL,
+            PRIMARY KEY (id),
+            KEY idx_status (status, created_at),
+            KEY idx_event (event_type, resource_id),
+            KEY idx_idem (idempotency_key)
+        ) $charset;";
+        require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+        dbDelta($sql);
+    }
+
+    /**
+     * Inserta un evento que ha fallado al procesarse en la DLQ. Si ya existe
+     * un registro con el mismo `idempotency_key` pendiente, se actualiza
+     * incrementando attempts en vez de duplicar.
+     */
+    public static function dlq_record_failure(array $event, string $error): int
+    {
+        global $wpdb;
+        $t = self::dlq_table_name();
+        $idemKey = (string) ($event['idempotency_key'] ?? '');
+
+        if ($idemKey !== '') {
+            $existing = $wpdb->get_row($wpdb->prepare(
+                "SELECT id, attempts FROM $t WHERE idempotency_key = %s AND status = 'pending' LIMIT 1",
+                $idemKey
+            ));
+            if ($existing) {
+                $wpdb->update($t, [
+                    'last_error' => $error,
+                    'attempts'   => (int) $existing->attempts + 1,
+                    'updated_at' => current_time('mysql', true),
+                ], ['id' => (int) $existing->id]);
+                return (int) $existing->id;
+            }
+        }
+
+        $wpdb->insert($t, [
+            'event_type'      => (string) ($event['event_type'] ?? 'unknown'),
+            'resource_id'     => (int) ($event['resource_id'] ?? 0),
+            'idempotency_key' => $idemKey,
+            'payload'         => wp_json_encode($event, JSON_UNESCAPED_UNICODE),
+            'last_error'      => $error,
+            'attempts'        => 1,
+            'status'          => 'pending',
+            'created_at'      => current_time('mysql', true),
+        ]);
+        return (int) $wpdb->insert_id;
+    }
+
+    /**
+     * Reintenta una entrada DLQ: re-despacha el evento original. Si vuelve
+     * a fallar, incrementa attempts. Si funciona, marca status=replayed.
+     *
+     * `dispatch()` por sí mismo swallowea las excepciones (las loguea pero
+     * no las propaga). Para diagnosticar fallos en replay, instalamos un
+     * filtro temporal sobre `tpv_sync_log` que captura cualquier `error`
+     * loggeado durante el replay y lo convierte en valor de retorno.
+     */
+    public function dlq_replay(int $id): array
+    {
+        global $wpdb;
+        $t = self::dlq_table_name();
+        $row = $wpdb->get_row($wpdb->prepare("SELECT * FROM $t WHERE id = %d", $id));
+        if (!$row) return ['ok' => false, 'error' => 'not_found'];
+
+        $event = json_decode($row->payload, true);
+        if (!is_array($event)) {
+            return ['ok' => false, 'error' => 'corrupt_payload'];
+        }
+
+        // Capturamos los errores que dispatch() loguea durante este replay.
+        // Filtro temporal: leemos el log antes y después; si aparece una
+        // entrada nueva con status=error para este event_type, contó como
+        // fallo aunque dispatch() no lance.
+        $logTable = $wpdb->prefix . 'tpv_sync_log';
+        $errorBefore = (int) $wpdb->get_var(
+            "SELECT IFNULL(MAX(id), 0) FROM $logTable WHERE status = 'error'"
+        );
+
+        try {
+            $this->dispatch($event);
+        } catch (\Throwable $e) {
+            $wpdb->update($t, [
+                'last_error' => $e->getMessage(),
+                'attempts'   => (int) $row->attempts + 1,
+                'updated_at' => current_time('mysql', true),
+            ], ['id' => $id]);
+            return ['ok' => false, 'id' => $id, 'error' => $e->getMessage()];
+        }
+
+        // ¿Apareció algún log de error durante el dispatch?
+        $newError = $wpdb->get_var($wpdb->prepare(
+            "SELECT message FROM $logTable WHERE status = 'error' AND id > %d
+             AND event_type = %s ORDER BY id DESC LIMIT 1",
+            $errorBefore, (string) ($event['event_type'] ?? '')
+        ));
+        if ($newError !== null) {
+            $msg = (string) $newError;
+            $wpdb->update($t, [
+                'last_error' => $msg,
+                'attempts'   => (int) $row->attempts + 1,
+                'updated_at' => current_time('mysql', true),
+            ], ['id' => $id]);
+            return ['ok' => false, 'id' => $id, 'error' => $msg];
+        }
+
+        $wpdb->update($t, [
+            'status'     => 'replayed',
+            'updated_at' => current_time('mysql', true),
+        ], ['id' => $id]);
+        return ['ok' => true, 'id' => $id];
+    }
+
+    /**
+     * Reintenta TODAS las entradas DLQ pendientes. Devuelve resumen.
+     */
+    public function dlq_replay_all(int $maxBatch = 100): array
+    {
+        global $wpdb;
+        $t = self::dlq_table_name();
+        $ids = (array) $wpdb->get_col($wpdb->prepare(
+            "SELECT id FROM $t WHERE status = 'pending' ORDER BY id ASC LIMIT %d", $maxBatch
+        ));
+        $ok = 0; $err = 0;
+        foreach ($ids as $id) {
+            $r = $this->dlq_replay((int) $id);
+            if (!empty($r['ok'])) $ok++; else $err++;
+        }
+        return ['attempted' => count($ids), 'ok' => $ok, 'err' => $err];
+    }
+
+    /**
+     * Borra una entrada de la DLQ (admin descarta el evento).
+     */
+    public static function dlq_delete(int $id): bool
+    {
+        global $wpdb;
+        $t = self::dlq_table_name();
+        return (bool) $wpdb->delete($t, ['id' => $id]);
+    }
+
+    /**
+     * Estadísticas: pending / replayed / total para el panel admin.
+     */
+    public static function dlq_stats(): array
+    {
+        global $wpdb;
+        $t = self::dlq_table_name();
+        $rows = (array) $wpdb->get_results("SELECT status, COUNT(*) AS n FROM $t GROUP BY status");
+        $out = ['pending' => 0, 'replayed' => 0, 'total' => 0];
+        foreach ($rows as $r) {
+            $out[$r->status] = (int) $r->n;
+            $out['total']   += (int) $r->n;
+        }
+        return $out;
+    }
+
+    /**
      * Tabla de idempotencia atómica. La PK UNIQUE sobre `idempotency_key` + INSERT IGNORE
      * garantiza que solo un proceso concurrente "gana" la inserción — resto recibe
      * affected_rows=0 y responde con duplicate=true.
@@ -211,6 +400,12 @@ class TPV_Sync_Webhook
             } catch (\Throwable $e) {
                 $this->log('batch.error', (int)($event['resource_id'] ?? 0),
                     'Error en dispatch batch: ' . $e->getMessage(), 'error');
+                // DLQ: persistimos el evento entero + error para que el admin
+                // pueda reintentarlo. Sin esto los webhooks fallidos solo
+                // dejaban rastro en log y se perdían — el TPV ya respondió
+                // 200 OK al dispatcher (porque la firma + idem fueron OK)
+                // y no lo va a reenviar.
+                self::dlq_record_failure($event, $e->getMessage());
             }
         }
     }
