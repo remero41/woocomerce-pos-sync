@@ -25,7 +25,7 @@ class QueueIntegrationTest extends TestCase
     public static function setUpBeforeClass(): void
     {
         require_once __DIR__ . '/stubs.php';
-        require_once __DIR__ . '/../../includes/class-queue.php';
+        require_once __DIR__ . '/../../../woocommerce-conector/includes/class-queue.php';
     }
 
     protected function setUp(): void

@@ -2,16 +2,17 @@
 <ruleset name="woocommerce-conector">
     <description>Coding standards for the WooCommerce Conector plugin.</description>
 
-    <!-- Paths to scan -->
-    <file>woocommerce-conector.php</file>
-    <file>includes</file>
+    <!-- Paths to scan (relativos a la raíz del repo cuando se invoca con
+         `phpcs --standard=.memoria_plugin_wordpress/phpcs.xml`) -->
+    <file>../woocommerce-conector/woocommerce-conector.php</file>
+    <file>../woocommerce-conector/includes</file>
 
     <!-- Exclude third-party and generated code -->
-    <exclude-pattern>tests/*</exclude-pattern>
-    <exclude-pattern>dev-tools/*</exclude-pattern>
-    <exclude-pattern>vendor/*</exclude-pattern>
-    <exclude-pattern>languages/*</exclude-pattern>
-    <exclude-pattern>docs/*</exclude-pattern>
+    <exclude-pattern>*/tests/*</exclude-pattern>
+    <exclude-pattern>*/dev-tools/*</exclude-pattern>
+    <exclude-pattern>*/vendor/*</exclude-pattern>
+    <exclude-pattern>*/languages/*</exclude-pattern>
+    <exclude-pattern>*/docs/*</exclude-pattern>
 
     <!-- Arguments -->
     <arg name="colors"/>

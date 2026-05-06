@@ -16,7 +16,7 @@
     </testsuites>
     <source>
         <include>
-            <directory>includes</directory>
+            <directory>../woocommerce-conector/includes</directory>
         </include>
     </source>
     <php>

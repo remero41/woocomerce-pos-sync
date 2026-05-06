@@ -31,11 +31,11 @@ if (!function_exists('wc_attribute_label')) {
 // se declararán; las que tienen guard (wc_get_product) no nos pisan.
 require_once __DIR__ . '/../wp-stubs.php';
 
-require_once __DIR__ . '/../../includes/class-circuit-breaker.php';
-require_once __DIR__ . '/../../includes/class-secrets.php';
-require_once __DIR__ . '/../../includes/class-api-client.php';
-require_once __DIR__ . '/../../includes/class-queue.php';
-require_once __DIR__ . '/../../includes/class-product-sync.php';
+require_once __DIR__ . '/../../../woocommerce-conector/includes/class-circuit-breaker.php';
+require_once __DIR__ . '/../../../woocommerce-conector/includes/class-secrets.php';
+require_once __DIR__ . '/../../../woocommerce-conector/includes/class-api-client.php';
+require_once __DIR__ . '/../../../woocommerce-conector/includes/class-queue.php';
+require_once __DIR__ . '/../../../woocommerce-conector/includes/class-product-sync.php';
 
 // Mock product/variation
 class FakeWcProduct {

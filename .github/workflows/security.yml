@@ -32,9 +32,9 @@ jobs:
             --config=p/secrets \
             --config=p/ci \
             --sarif --output=semgrep.sarif \
-            --exclude="dev-tools" \
+            --exclude=".memoria_plugin_wordpress" \
             --exclude="vendor" \
-            --exclude="languages" \
+            --exclude="woocommerce-conector/languages" \
             --error
 
       - name: Upload SARIF to GitHub Security
@@ -58,10 +58,13 @@ jobs:
           tools: composer:v2
 
       - name: Install deps
+        working-directory: .memoria_plugin_wordpress
         run: composer install --prefer-dist --no-progress
 
       - name: Install psalm
+        working-directory: .memoria_plugin_wordpress
         run: composer require --dev vimeo/psalm humbug/psalm-plugin-wordpress --no-progress || true
 
       - name: Run taint analysis
+        working-directory: .memoria_plugin_wordpress
         run: vendor/bin/psalm --taint-analysis --no-progress --show-info=false || true

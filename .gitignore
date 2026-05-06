@@ -1,12 +1,12 @@
-/vendor/
-/composer.lock
-/.phpunit.result.cache
-/.phpcs-cache
+/.memoria_plugin_wordpress/vendor/
+/.memoria_plugin_wordpress/composer.lock
+/.memoria_plugin_wordpress/.phpunit.result.cache
+/.memoria_plugin_wordpress/.phpcs-cache
 *.log
 *.sql.gz
 
-# Variables locales de tests dev (ver dev-tools/tests/.env.example)
-dev-tools/tests/.env
+# Variables locales de tests dev (ver .memoria_plugin_wordpress/dev-tools/tests/.env.example)
+.memoria_plugin_wordpress/dev-tools/tests/.env
 
 # Archivos del entorno de desarrollo local
 .DS_Store
@@ -16,6 +16,8 @@ dev-tools/tests/.env
 *.swo
 *~
 
-# Endpoint dev-only (no distribuir)
-# NOTA: tests/e2e_api.php sólo responde si TPV_SYNC_E2E_ENABLED=true en wp-config.php
-# pero por seguridad el build de distribución lo puede excluir.
+# Endpoints dev-only (vienen DENTRO del plugin, sólo responden si
+# TPV_SYNC_E2E_ENABLED=true en wp-config.php — el build de distribución
+# debería excluirlos por seguridad):
+#   woocommerce-conector/tests/e2e_api.php
+#   woocommerce-conector/tests/e2e_trigger.php

@@ -18,7 +18,11 @@
 declare(strict_types=1);
 
 define('WP_USE_THEMES', false);
-require_once dirname(__DIR__, 4) . '/wp-load.php';
+
+// Bootstrapea el WP del entorno tpv85 por defecto. Override con env
+// TPV_SYNC_WP_ROOT si el test corre contra otra instalación.
+$wpRoot = getenv('TPV_SYNC_WP_ROOT') ?: '/var/www/html/tpv85/public_html';
+require_once $wpRoot . '/wp-load.php';
 require_once ABSPATH . 'wp-admin/includes/user.php';
 
 if (!class_exists('TPV_Sync_Customer_Sync')) {

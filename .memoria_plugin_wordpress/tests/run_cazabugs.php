@@ -44,7 +44,7 @@ class TCB {
     }
 }
 
-$p = dirname(__DIR__);
+$p = dirname(__DIR__, 2) . '/woocommerce-conector';
 require_once $p . '/includes/class-api-client.php';
 require_once $p . '/includes/class-product-sync.php';
 require_once $p . '/includes/class-order-sync.php';

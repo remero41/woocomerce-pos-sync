@@ -14,7 +14,7 @@ use PHPUnit\Framework\TestCase;
  */
 class QueueOperationsRegressionTest extends TestCase
 {
-    private const INCLUDES_DIR = __DIR__ . '/../../includes/';
+    private const INCLUDES_DIR = __DIR__ . '/../../../woocommerce-conector/includes/';
 
     public function testAllEnqueuedOperationsAreHandledInExecute(): void
     {

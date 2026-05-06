@@ -18,7 +18,7 @@ class QueueConstantsTest extends TestCase
         if (!defined('HOUR_IN_SECONDS')) define('HOUR_IN_SECONDS', 3600);
         if (!defined('MINUTE_IN_SECONDS')) define('MINUTE_IN_SECONDS', 60);
         if (!defined('DAY_IN_SECONDS')) define('DAY_IN_SECONDS', 86400);
-        require_once __DIR__ . '/../../includes/class-queue.php';
+        require_once __DIR__ . '/../../../woocommerce-conector/includes/class-queue.php';
     }
 
     public function testMaxAttemptsIs6(): void

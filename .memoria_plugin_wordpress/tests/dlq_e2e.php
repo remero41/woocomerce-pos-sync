@@ -17,14 +17,21 @@
 declare(strict_types=1);
 
 // El plugin WC depende de WordPress real para wpdb (CREATE TABLE / query / insert).
-// Bootstrapeo el WP entero del entorno tpv85.
-$wpRoot = dirname(__DIR__, 4);  // .../tpv85/public_html
+// Por defecto bootstrapea el WP del entorno tpv85; permite override con env
+// TPV_SYNC_WP_ROOT para correr el test contra otra instalación.
+$wpRoot = getenv('TPV_SYNC_WP_ROOT') ?: '/var/www/html/tpv85/public_html';
 define('SHORTINIT', false);
 require_once $wpRoot . '/wp-load.php';
-require_once dirname(__DIR__) . '/includes/class-api-client.php';
-require_once dirname(__DIR__) . '/includes/class-product-sync.php';
-require_once dirname(__DIR__) . '/includes/class-order-sync.php';
-require_once dirname(__DIR__) . '/includes/class-webhook-handler.php';
+
+// Si el plugin no está activo en el WP destino, lo cargamos desde el repo.
+// (Si está activo, las clases ya están en memoria y un require_once duplicaría).
+if (!class_exists('TPV_Sync_Webhook')) {
+    $pluginRoot = dirname(__DIR__, 2) . '/woocommerce-conector';
+    require_once $pluginRoot . '/includes/class-api-client.php';
+    require_once $pluginRoot . '/includes/class-product-sync.php';
+    require_once $pluginRoot . '/includes/class-order-sync.php';
+    require_once $pluginRoot . '/includes/class-webhook-handler.php';
+}
 
 $pass = 0; $fail = 0; $failures = [];
 function ok(string $name, bool $cond, string $extra = ''): void {

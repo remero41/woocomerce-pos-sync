@@ -61,7 +61,7 @@ class T {
 }
 
 // Cargar clases del plugin
-$pluginRoot = dirname(__DIR__);
+$pluginRoot = dirname(__DIR__, 2) . '/woocommerce-conector';
 require_once $pluginRoot . '/includes/class-api-client.php';
 require_once $pluginRoot . '/includes/class-product-sync.php';
 require_once $pluginRoot . '/includes/class-order-sync.php';
@@ -1041,7 +1041,7 @@ $t->test('E2E-9 Payload del POST contiene name, price, sku, status, quantity', f
 });
 
 $t->test('E2E-10 Admin UI: ajax handler y botón registrados', function($t) {
-    $src = file_get_contents(__DIR__ . '/../includes/class-admin.php');
+    $src = file_get_contents(__DIR__ . '/../../woocommerce-conector/includes/class-admin.php');
     $t->assert(str_contains($src, "wp_ajax_tpv_sync_push_all"),   'add_action wp_ajax_tpv_sync_push_all');
     $t->assert(str_contains($src, "public function ajax_push_all"), 'método ajax_push_all definido');
     $t->assert(str_contains($src, "btn-push-all"),                  'Botón btn-push-all presente en UI');
@@ -1052,7 +1052,7 @@ $t->test('E2E-10 Admin UI: ajax handler y botón registrados', function($t) {
 
 $t->test('E2E-11 WP-CLI: método push_all existe en TPV_Sync_CLI', function($t) {
     // Solo validamos definición + docblock. No podemos invocarlo sin WP_CLI real.
-    $src = file_get_contents(__DIR__ . '/../includes/class-cli.php');
+    $src = file_get_contents(__DIR__ . '/../../woocommerce-conector/includes/class-cli.php');
     $t->assert(str_contains($src, 'public function push_all('), 'Método push_all definido');
     $t->assert(str_contains($src, '[--dry-run]'), 'Soporta --dry-run');
     $t->assert(str_contains($src, '[--skip-synced]'), 'Soporta --skip-synced');
@@ -1087,7 +1087,7 @@ $t->test('E2E-12 100 productos en bulk: rendimiento y coherencia', function($t) 
 // ═══════════════════════════════════════════════════════════════════════
 
 $t->test('CS-01 Handler ajax_check_sync registrado en init()', function($t) {
-    $src = file_get_contents(__DIR__ . '/../includes/class-admin.php');
+    $src = file_get_contents(__DIR__ . '/../../woocommerce-conector/includes/class-admin.php');
     $t->assert(str_contains($src, "wp_ajax_tpv_sync_check_sync"),
         'add_action wp_ajax_tpv_sync_check_sync');
     $t->assert(str_contains($src, 'public function ajax_check_sync'),
@@ -1095,7 +1095,7 @@ $t->test('CS-01 Handler ajax_check_sync registrado en init()', function($t) {
 });
 
 $t->test('CS-02 Botón "Comprobar sincronización" presente en UI', function($t) {
-    $src = file_get_contents(__DIR__ . '/../includes/class-admin.php');
+    $src = file_get_contents(__DIR__ . '/../../woocommerce-conector/includes/class-admin.php');
     $t->assert(str_contains($src, 'cc-btn-check-sync'),
         'Botón cc-btn-check-sync en HTML');
     $t->assert(str_contains($src, 'Comprobar sincronización'),
@@ -1105,32 +1105,32 @@ $t->test('CS-02 Botón "Comprobar sincronización" presente en UI', function($t)
 });
 
 $t->test('CS-03 Auto-clasificación: filtro precio negativo', function($t) {
-    $src = file_get_contents(__DIR__ . '/../includes/class-admin.php');
+    $src = file_get_contents(__DIR__ . '/../../woocommerce-conector/includes/class-admin.php');
     $t->assert(str_contains($src, "(float) (\$p['price'] ?? 0) < 0"),
         'Filtro precio<0 presente en ajax_check_sync');
 });
 
 $t->test('CS-04 Auto-clasificación: filtro model vacío', function($t) {
-    $src = file_get_contents(__DIR__ . '/../includes/class-admin.php');
+    $src = file_get_contents(__DIR__ . '/../../woocommerce-conector/includes/class-admin.php');
     $t->assert(str_contains($src, "if (\$m === '') return true"),
         'Filtro model vacío presente');
 });
 
 $t->test('CS-05 Auto-clasificación: POS_DISCOUNT/SERVICE/TIP filtrados', function($t) {
-    $src = file_get_contents(__DIR__ . '/../includes/class-admin.php');
+    $src = file_get_contents(__DIR__ . '/../../woocommerce-conector/includes/class-admin.php');
     $t->assert(str_contains($src, "'POS_DISCOUNT'"), "POS_DISCOUNT en internalPosModels");
     $t->assert(str_contains($src, "'POS_SERVICE'"), "POS_SERVICE en internalPosModels");
     $t->assert(str_contains($src, "'POS_TIP'"),     "POS_TIP en internalPosModels");
 });
 
 $t->test('CS-06 Auto-clasificación: filtro model duplicado', function($t) {
-    $src = file_get_contents(__DIR__ . '/../includes/class-admin.php');
+    $src = file_get_contents(__DIR__ . '/../../woocommerce-conector/includes/class-admin.php');
     $t->assert(str_contains($src, "(\$modelCount[\$m] ?? 0) > 1"),
         'Filtro model duplicado en TPV');
 });
 
 $t->test('CS-07 Estructura respuesta: campos obligatorios', function($t) {
-    $src = file_get_contents(__DIR__ . '/../includes/class-admin.php');
+    $src = file_get_contents(__DIR__ . '/../../woocommerce-conector/includes/class-admin.php');
     $expected = ['synced', 'islands_wc', 'islands_tpv', 'divergences',
                  'unimportable', 'wc_total', 'tpv_total'];
     foreach ($expected as $key) {
@@ -1140,7 +1140,7 @@ $t->test('CS-07 Estructura respuesta: campos obligatorios', function($t) {
 });
 
 $t->test('CS-08 Seguridad: nonce y capability check', function($t) {
-    $src = file_get_contents(__DIR__ . '/../includes/class-admin.php');
+    $src = file_get_contents(__DIR__ . '/../../woocommerce-conector/includes/class-admin.php');
     $section = substr($src, strpos($src, 'public function ajax_check_sync'), 4000);
     $t->assert(str_contains($section, "check_ajax_referer('tpv_sync', 'nonce')"),
         'Nonce check en ajax_check_sync');
@@ -1149,7 +1149,7 @@ $t->test('CS-08 Seguridad: nonce y capability check', function($t) {
 });
 
 $t->test('CS-09 Renderizado: pantalla de status con 4 stats', function($t) {
-    $src = file_get_contents(__DIR__ . '/../includes/class-admin.php');
+    $src = file_get_contents(__DIR__ . '/../../woocommerce-conector/includes/class-admin.php');
     $t->assert(str_contains($src, 'cc-syncstatus-stats'),
         'Container cc-syncstatus-stats en JS');
     $t->assert(str_contains($src, 'cc-syncstatus-stat'),
@@ -1159,7 +1159,7 @@ $t->test('CS-09 Renderizado: pantalla de status con 4 stats', function($t) {
 });
 
 $t->test('CS-10 Estado OK: cuando divergences=0 muestra mensaje verde', function($t) {
-    $src = file_get_contents(__DIR__ . '/../includes/class-admin.php');
+    $src = file_get_contents(__DIR__ . '/../../woocommerce-conector/includes/class-admin.php');
     $t->assert(str_contains($src, 'is-ok') && str_contains($src, 'is-warn'),
         'Variantes ok/warn según divergences');
     $t->assert(str_contains($src, 'Todo en orden'),
@@ -1167,7 +1167,7 @@ $t->test('CS-10 Estado OK: cuando divergences=0 muestra mensaje verde', function
 });
 
 $t->test('CS-11 Auto-clasificación: unimportable mostrado como info no alarma', function($t) {
-    $src = file_get_contents(__DIR__ . '/../includes/class-admin.php');
+    $src = file_get_contents(__DIR__ . '/../../woocommerce-conector/includes/class-admin.php');
     $t->assert(str_contains($src, 'cc-syncstatus-info'),
         'Bloque info presente');
     $t->assert(str_contains($src, 'cc-syncstatus-info-icon'),
@@ -1177,7 +1177,7 @@ $t->test('CS-11 Auto-clasificación: unimportable mostrado como info no alarma',
 });
 
 $t->test('CS-12 CSS de la pantalla syncstatus presente', function($t) {
-    $src = file_get_contents(__DIR__ . '/../includes/class-admin.php');
+    $src = file_get_contents(__DIR__ . '/../../woocommerce-conector/includes/class-admin.php');
     $t->assert(str_contains($src, '.cc-wrap .cc-syncstatus-card'),
         'Estilo cc-syncstatus-card definido');
     $t->assert(str_contains($src, '.cc-wrap .cc-syncstatus-header.is-ok'),
@@ -1189,7 +1189,7 @@ $t->test('CS-12 CSS de la pantalla syncstatus presente', function($t) {
 });
 
 $t->test('CS-13 Wizard inicial: pregunta única "¿Quién manda?"', function($t) {
-    $src = file_get_contents(__DIR__ . '/../includes/class-admin.php');
+    $src = file_get_contents(__DIR__ . '/../../woocommerce-conector/includes/class-admin.php');
     $t->assert(str_contains($src, '¿Cuál es tu sistema principal de inventario?'),
         'Título principal del wizard');
     $t->assert(str_contains($src, 'data-action="pull"') || str_contains($src, "data-action=\"pull\""),
@@ -1199,7 +1199,7 @@ $t->test('CS-13 Wizard inicial: pregunta única "¿Quién manda?"', function($t)
 });
 
 $t->test('CS-14 Wizard inicial: 3 paneles (decidir/sincronizar/listo)', function($t) {
-    $src = file_get_contents(__DIR__ . '/../includes/class-admin.php');
+    $src = file_get_contents(__DIR__ . '/../../woocommerce-conector/includes/class-admin.php');
     for ($i = 1; $i <= 3; $i++) {
         $t->assert(
             str_contains($src, "data-step-panel=\"$i\"") ||
@@ -1210,7 +1210,7 @@ $t->test('CS-14 Wizard inicial: 3 paneles (decidir/sincronizar/listo)', function
 });
 
 $t->test('CS-15 Wizard inicial: nota informativa de no-duplicación', function($t) {
-    $src = file_get_contents(__DIR__ . '/../includes/class-admin.php');
+    $src = file_get_contents(__DIR__ . '/../../woocommerce-conector/includes/class-admin.php');
     $t->assert(str_contains($src, 'cc-match-note'),
         'Bloque cc-match-note presente');
     $t->assert(str_contains($src, 'no se duplicarán'),
@@ -1218,7 +1218,7 @@ $t->test('CS-15 Wizard inicial: nota informativa de no-duplicación', function($
 });
 
 $t->test('CS-16 Hook PS-equivalente: producto sincronizado revertido cuando manda TPV', function($t) {
-    $src = file_get_contents(__DIR__ . '/../includes/class-product-sync.php');
+    $src = file_get_contents(__DIR__ . '/../../woocommerce-conector/includes/class-product-sync.php');
     $t->assert(str_contains($src, "tpv_sync_principal"),
         'Lectura de option tpv_sync_principal');
     $t->assert(str_contains($src, "principal === 'tpv'"),
@@ -1228,7 +1228,7 @@ $t->test('CS-16 Hook PS-equivalente: producto sincronizado revertido cuando mand
 });
 
 $t->test('CS-17 Hook delete: NO propaga al TPV cuando manda TPV', function($t) {
-    $src = file_get_contents(__DIR__ . '/../includes/class-product-sync.php');
+    $src = file_get_contents(__DIR__ . '/../../woocommerce-conector/includes/class-product-sync.php');
     $delSection = substr($src,
         strpos($src, 'public function push_wc_delete_to_tpv'),
         2000);
@@ -1237,7 +1237,7 @@ $t->test('CS-17 Hook delete: NO propaga al TPV cuando manda TPV', function($t) {
 });
 
 $t->test('CS-18 Banner read-only en editor de producto', function($t) {
-    $src = file_get_contents(__DIR__ . '/../includes/class-admin.php');
+    $src = file_get_contents(__DIR__ . '/../../woocommerce-conector/includes/class-admin.php');
     $t->assert(str_contains($src, 'managed_product_banner'),
         'Método managed_product_banner definido');
     $t->assert(str_contains($src, 'Gestionado por el TPV'),
@@ -1247,7 +1247,7 @@ $t->test('CS-18 Banner read-only en editor de producto', function($t) {
 });
 
 $t->test('CS-19 Persistencia tpv_sync_principal vía param ?principal=', function($t) {
-    $src = file_get_contents(__DIR__ . '/../includes/class-admin.php');
+    $src = file_get_contents(__DIR__ . '/../../woocommerce-conector/includes/class-admin.php');
     $importSection = substr($src,
         strpos($src, 'public function ajax_import'),
         2000);
@@ -1258,7 +1258,7 @@ $t->test('CS-19 Persistencia tpv_sync_principal vía param ?principal=', functio
 });
 
 $t->test('CS-20 Endpoint solo guarda valores válidos de principal', function($t) {
-    $src = file_get_contents(__DIR__ . '/../includes/class-admin.php');
+    $src = file_get_contents(__DIR__ . '/../../woocommerce-conector/includes/class-admin.php');
     // Buscar ambos handlers (import + push_all).
     $countValid = substr_count($src, "in_array(\$principal, ['tpv', 'wc'], true)");
     $t->assert($countValid >= 2,

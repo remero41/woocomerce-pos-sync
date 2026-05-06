@@ -23,13 +23,15 @@ jobs:
       - name: Cache Composer
         uses: actions/cache@v4
         with:
-          path: vendor
-          key: composer-${{ hashFiles('composer.json') }}
+          path: .memoria_plugin_wordpress/vendor
+          key: composer-${{ hashFiles('.memoria_plugin_wordpress/composer.json') }}
 
       - name: Install dependencies
+        working-directory: .memoria_plugin_wordpress
         run: composer install --prefer-dist --no-progress
 
       - name: Run PHPCS
+        working-directory: .memoria_plugin_wordpress
         run: vendor/bin/phpcs --standard=phpcs.xml --report=checkstyle | cs2pr
 
   analyze:
@@ -48,13 +50,15 @@ jobs:
       - name: Cache Composer
         uses: actions/cache@v4
         with:
-          path: vendor
-          key: composer-${{ hashFiles('composer.json') }}
+          path: .memoria_plugin_wordpress/vendor
+          key: composer-${{ hashFiles('.memoria_plugin_wordpress/composer.json') }}
 
       - name: Install dependencies
+        working-directory: .memoria_plugin_wordpress
         run: composer install --prefer-dist --no-progress
 
       - name: Run PHPStan
+        working-directory: .memoria_plugin_wordpress
         run: vendor/bin/phpstan analyze -c phpstan.neon --no-progress --error-format=github
 
   unit:
@@ -76,13 +80,15 @@ jobs:
       - name: Cache Composer
         uses: actions/cache@v4
         with:
-          path: vendor
-          key: composer-${{ hashFiles('composer.json') }}-${{ matrix.php-version }}
+          path: .memoria_plugin_wordpress/vendor
+          key: composer-${{ hashFiles('.memoria_plugin_wordpress/composer.json') }}-${{ matrix.php-version }}
 
       - name: Install dependencies
+        working-directory: .memoria_plugin_wordpress
         run: composer install --prefer-dist --no-progress
 
       - name: Run PHPUnit
+        working-directory: .memoria_plugin_wordpress
         run: vendor/bin/phpunit --no-coverage
 
   syntax:
@@ -103,8 +109,8 @@ jobs:
       - name: Syntax check
         run: |
           find . -type f -name '*.php' \
-              -not -path './vendor/*' \
-              -not -path './dev-tools/*' \
+              -not -path './.memoria_plugin_wordpress/vendor/*' \
+              -not -path './.memoria_plugin_wordpress/dev-tools/*' \
               -print0 | xargs -0 -n1 php -l
 
   # El job "e2e" requiere infraestructura externa (WP + TPV API) y sólo tiene
@@ -118,4 +124,4 @@ jobs:
       - name: Run cazabugs suite
         env:
           TEST_SECRET: ${{ secrets.TEST_SECRET }}
-        run: bash dev-tools/tests/cazabugs_200_wp.sh
+        run: bash .memoria_plugin_wordpress/dev-tools/tests/cazabugs_200_wp.sh
