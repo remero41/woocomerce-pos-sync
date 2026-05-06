@@ -207,6 +207,13 @@ add_action('plugins_loaded', function () {
         TPV_Sync_Webhook::create_idem_table();
         update_option('tpv_sync_idem_table_v1', '1', false);
     }
+
+    // Tabla DLQ — añadida en 2026-05. Plugins ya instalados antes no la
+    // tienen y el activation hook no se vuelve a disparar.
+    if (class_exists('TPV_Sync_Webhook') && get_option('tpv_sync_dlq_table_v1') !== '1') {
+        TPV_Sync_Webhook::create_dlq_table();
+        update_option('tpv_sync_dlq_table_v1', '1', false);
+    }
 }, 20);
 
 register_activation_hook(__FILE__, function () {
@@ -236,6 +243,7 @@ register_activation_hook(__FILE__, function () {
     // Tabla de idempotencia webhook (PK UNIQUE, INSERT IGNORE atómico)
     if (class_exists('TPV_Sync_Webhook')) {
         TPV_Sync_Webhook::create_idem_table();
+        TPV_Sync_Webhook::create_dlq_table();
     }
 
     // Valores por defecto de módulos
