@@ -21,7 +21,7 @@ jobs:
           coverage: none
 
       - name: Cache Composer
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .memoria_plugin_wordpress/vendor
           key: composer-${{ hashFiles('.memoria_plugin_wordpress/composer.json') }}
@@ -48,7 +48,7 @@ jobs:
           coverage: none
 
       - name: Cache Composer
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .memoria_plugin_wordpress/vendor
           key: composer-${{ hashFiles('.memoria_plugin_wordpress/composer.json') }}
@@ -78,7 +78,7 @@ jobs:
           coverage: none
 
       - name: Cache Composer
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .memoria_plugin_wordpress/vendor
           key: composer-${{ hashFiles('.memoria_plugin_wordpress/composer.json') }}-${{ matrix.php-version }}
