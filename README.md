@@ -61,67 +61,28 @@ woocommerce-conector/             # ⚑ El plugin que se distribuye en WP.org
         class-webhook-handler.php        Receptor HMAC + idempotencia + DLQ
     assets/                           Imágenes del admin
     languages/                        i18n (.po + .mo: es_ES, en_US, fr_FR)
-    tests/                            Endpoints HTTP dev-only que viajan con
-                                      el plugin (gated por TPV_SYNC_E2E_ENABLED)
-        e2e_api.php
-        e2e_trigger.php
 
-.memoria_plugin_wordpress/        # Recursos NO distribuidos en WP.org
-    composer.json, phpcs.xml, phpstan.neon, phpunit.xml.dist, infection.json5
-    tests/
-        unit/                            PHPUnit (Queue, CircuitBreaker, Secrets,
-                                         WebhookSignature, options flatten,
-                                         tax mapping)
-        dlq_e2e.php                      DLQ contra wpdb real
-        customers_e2e_full.php           Sync clientes contra ambas BDs
-        cazabugs_wc.php
-        run_cazabugs*.php                Suites cazabugs (PHP)
-        run_sprint*.php
-        wp-stubs.php                     Stubs WP/WC para tests aislados
-    dev-tools/
-        findings/                        Análisis de bugs encontrados
-        tests/
-            cazabugs_200_wp.sh           Suite 200 tests bash sobre WP+TPV
-            bugs_focused.sh              Tests TDD para bugs concretos
-            README.md
-            .env.example
-    docs/
-        PLUGIN_DEVELOPER.md              Guía para desarrolladores
-
-.github/workflows/                # CI: phpcs, phpstan, phpunit, semgrep
+.github/workflows/                # CI
 README.md                         # Este fichero
+LICENSE                           # GPL-2.0-or-later
 .gitignore
 ```
 
-## Setup local
+El repositorio contiene únicamente el plugin distribuible. El andamiaje de
+desarrollo (PHPUnit, PHPStan, PHPCS, suites E2E y notas internas) se mantiene
+fuera de este repo por apuntar a entornos privados.
 
-```bash
-# Todas las herramientas de dev viven en .memoria_plugin_wordpress/
-cd .memoria_plugin_wordpress
+## Instalación
 
-composer install                  # Instala dev-tools
-composer analyze                  # PHPStan level 5
-composer lint                     # PHPCS (WordPress-Extra)
-composer lint:fix
-composer test                     # PHPUnit unit tests
-composer test:focused             # Bugs concretos (requiere WP+TPV reales)
-composer test:suite               # Suite completa 200 tests bash
-```
+1. Copia `woocommerce-conector/` a `wp-content/plugins/` de tu WordPress.
+2. Actívalo desde **Plugins** en el escritorio de WordPress.
+3. Sigue el asistente en **Catinfog Conector**: indica la URL de la API del TPV
+   (`https://tu-tpv.ejemplo.com/api/v1`), el *client id* y el *client secret*, y
+   elige cuál de los dos lados es la fuente del catálogo.
 
-## Despliegue
-
-Sólo el directorio `woocommerce-conector/` se copia al servidor WP. Por
-ejemplo, para desplegar a `tu_bd`:
-
-```bash
-rsync -av --delete woocommerce-conector/ \
-    /ruta/a/tu/wordpress/wp-content/plugins/woocommerce_conector/
-```
-
-Nota: WP usa la carpeta `woocommerce_conector` (guion bajo) en
-`wp-content/plugins/` por compatibilidad histórica del slug. El repo usa
-`woocommerce-conector` (guion) por consistencia con el nombre del fichero
-principal.
+Nota sobre la carpeta: el repo usa `woocommerce-conector` (con guion) por
+consistencia con el fichero principal. Instalaciones históricas pueden tener la
+carpeta como `woocommerce_conector` (guion bajo); ambas funcionan.
 
 ## Flujo de sincronización
 
