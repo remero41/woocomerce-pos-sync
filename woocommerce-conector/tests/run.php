@@ -72,6 +72,24 @@ final class WooTestRunner
         }
     }
 
+    /**
+     * Igualdad estricta. El mensaje por defecto muestra esperado vs obtenido:
+     * sin eso, un fallo de umbral solo dice "fallo" y hay que ir a leer el
+     * test para saber que salio.
+     */
+    public function assertEquals($expected, $actual, string $msg = ''): void
+    {
+        $ok = $expected === $actual;
+        if ($msg === '') {
+            $msg = sprintf('esperado %s, obtenido %s',
+                var_export($expected, true), var_export($actual, true));
+        } elseif (!$ok) {
+            $msg .= sprintf(' (esperado %s, obtenido %s)',
+                var_export($expected, true), var_export($actual, true));
+        }
+        $this->assert($ok, $msg);
+    }
+
     public function summary(): int
     {
         $total = $this->passed + $this->failed;
@@ -93,9 +111,11 @@ $t = new WooTestRunner();
 require_once __DIR__ . '/test_api_client_parse.php';
 require_once __DIR__ . '/test_queue_success.php';
 require_once __DIR__ . '/test_auth_401_diagnostico.php';
+require_once __DIR__ . '/test_sync_health_panel.php';
 
 run_api_client_parse_tests($t);
 run_queue_success_tests($t);
 run_auth_401_diagnostico_tests($t);
+run_sync_health_panel_tests($t);
 
 exit($t->summary());
