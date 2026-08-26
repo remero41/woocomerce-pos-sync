@@ -64,6 +64,20 @@ class TPV_Sync_API_Client
 
         $body = json_decode(wp_remote_retrieve_body($response), true);
         if (empty($body['access_token'])) {
+            // BUG-F: este es el UNICO sitio donde se ve el 401 de credenciales.
+            // /auth/token no pasa por parse() (va con wp_remote_post directo),
+            // y parse() ademas lo excluye a proposito, asi que si no marcamos
+            // aqui, flagInvalidCredentials() no se llama nunca y la causa se
+            // pierde: resolveConnectionState() captura la excepcion, pone el
+            // chip en rojo (correcto) y la UI cae al texto por defecto "el TPV
+            // no responde" — mandando al comerciante a revisar su servidor
+            // cuando lo que pasa es que el secret ya no vale.
+            $code    = (int) wp_remote_retrieve_response_code($response);
+            $errType = (string) ($body['errors'][0]['error'] ?? $body['error'] ?? $body['code'] ?? '');
+            if ($code === 401 && $errType === 'invalid_client'
+                && class_exists('TPV_Sync_Secrets')) {
+                TPV_Sync_Secrets::flagInvalidCredentials('POST /auth/token');
+            }
             throw new RuntimeException('TPV API: no se obtuvo token. ' . wp_remote_retrieve_body($response));
         }
 

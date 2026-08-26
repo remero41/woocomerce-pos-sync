@@ -1234,6 +1234,16 @@ class TPV_Sync_Admin
         }
         $tab = sanitize_key($_GET['tab'] ?? 'home');
         $statusState = $this->resolveConnectionState();
+
+        // BUG-F (2026-08-26): 'down' colapsa dos situaciones muy distintas —
+        // el TPV caido y unas credenciales que ya no valen. Los textos de
+        // 'down' asumian siempre la primera, asi que con un secret invalido
+        // la pantalla mostraba "el TPV no responde, verifica que este online"
+        // con el TPV perfectamente online, mandando al comerciante a revisar
+        // su servidor. El estado sigue siendo 'down' (lo es); lo que cambia
+        // es QUE se le cuenta.
+        $badCredsOpt = get_option('tpv_sync_invalid_credentials');
+        $badCreds    = is_array($badCredsOpt) && !empty($badCredsOpt['at']);
         ?>
         <div class="wrap cc-wrap">
 
@@ -1268,8 +1278,7 @@ class TPV_Sync_Admin
             // corresponden a ningún conector del TPV (típico tras eliminar
             // el conector en el TPV o pegar credenciales de otra tienda por
             // error). Distinto del decrypt fail: aquí el descifrado funcionó.
-            $invalidCreds = get_option('tpv_sync_invalid_credentials');
-            if (is_array($invalidCreds) && !empty($invalidCreds['at']) && empty($decryptFail)):
+            if ($badCreds && empty($decryptFail)):
             ?>
                 <div class="cc-status-chip cc-status-chip-down" style="margin-bottom:8px;">
                     <span class="cc-status-dot"></span>
@@ -1288,6 +1297,10 @@ class TPV_Sync_Admin
                     <span class="cc-status-dot"></span>
                     <span><?= esc_html__('Conexión a medias — completa la configuración abajo', 'tpv-sync') ?></span>
                 </div>
+            <?php elseif ($statusState === 'down' && $badCreds): ?>
+                <?php /* El banner de credenciales de arriba ya da el diagnostico
+                         exacto; repetir aqui "comprueba que el TPV esta accesible"
+                         solo contradice al banner correcto. */ ?>
             <?php elseif ($statusState === 'down'): ?>
                 <div class="cc-status-chip cc-status-chip-down">
                     <span class="cc-status-dot"></span>
@@ -1326,6 +1339,14 @@ class TPV_Sync_Admin
 
     private function render_home_tab(): void
     {
+        // BUG-F: este flag se calcula TAMBIEN en render_page(), pero son
+        // metodos distintos y la variable no cruza el ambito. La primera
+        // version del fix condiciono la tarjeta con la $badCreds de alla y
+        // el ternario evaluaba null (falsy) → seguia saliendo el texto de
+        // "el TPV no responde" con el TPV online. Se recalcula aqui.
+        $badCredsOpt = get_option('tpv_sync_invalid_credentials');
+        $badCreds    = is_array($badCredsOpt) && !empty($badCredsOpt['at']);
+
         $nonce      = wp_create_nonce('tpv_sync');
         $api        = new TPV_Sync_API_Client();
         $configured = $api->isConfigured();
@@ -1788,11 +1809,17 @@ class TPV_Sync_Admin
         <div class="cc-step cc-step-action cc-step-action-down">
             <div class="cc-step-head">
                 <span class="cc-step-num">!</span>
-                <h2><?= esc_html__('Sin conexión con el TPV', 'tpv-sync') ?></h2>
-                <span class="cc-step-badge cc-badge-err">●&nbsp;<?= esc_html__('Caído', 'tpv-sync') ?></span>
+                <h2><?= $badCreds
+                        ? esc_html__('Credenciales no válidas', 'tpv-sync')
+                        : esc_html__('Sin conexión con el TPV', 'tpv-sync') ?></h2>
+                <span class="cc-step-badge cc-badge-err">●&nbsp;<?= $badCreds
+                        ? esc_html__('Sin acceso', 'tpv-sync')
+                        : esc_html__('Caído', 'tpv-sync') ?></span>
             </div>
             <p class="cc-step-help">
-                <?= esc_html__('La sincronización está activa pero el TPV no responde. Verifica que el TPV esté online.', 'tpv-sync') ?>
+                <?= $badCreds
+                    ? esc_html__('El TPV responde, pero rechaza estas credenciales. Vuelve a pegar el Client ID y el Secret desde el panel del TPV.', 'tpv-sync')
+                    : esc_html__('La sincronización está activa pero el TPV no responde. Verifica que el TPV esté online.', 'tpv-sync') ?>
             </p>
             <div class="cc-action-row">
                 <button type="button" class="cc-btn-action" id="cc-test-conn-big">
