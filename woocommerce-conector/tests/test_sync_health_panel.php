@@ -122,6 +122,38 @@ function run_sync_health_panel_tests(WooTestRunner $t): void
         }
     });
 
+    $t->suite('F4 — los textos que ve el comerciante');
+
+    // Ambos defectos se vieron SOLO al poner datos malos en el banco (88
+    // pendientes + 1 abandonada). Con la instalacion tranquila no salian.
+
+    // 1) Concordancia: con 1 abandonada salia "1 abandonadas".
+    $t->test('el contador de abandonadas concuerda en singular', function ($t) {
+        $src = (string) file_get_contents(dirname(__DIR__) . '/includes/class-admin.php');
+        // Lo que NO puede estar es el plural en un __() suelto, que ignora la
+        // cantidad. Dentro de _n() la forma plural SI debe aparecer: es uno de
+        // sus dos argumentos.
+        $t->assert(!str_contains($src, "esc_html__(' · %d abandonadas'"),
+            'texto fijo en plural: con 1 abandonada escribiria "1 abandonadas"');
+        $t->assert(str_contains($src, "_n(' · %d abandonada', ' · %d abandonadas'"),
+            'debe usar _n() con las dos formas para que 1 concuerde en singular');
+    });
+
+    // 2) La ruta que se le da al comerciante tiene que existir tal cual. El
+    //    reintento NO esta en la pestaña Log a secas: esta dentro de un
+    //    <details> PLEGADO rotulado "Diagnostico avanzado: cola de
+    //    reintentos". Decir solo "pestaña Log" manda a una pantalla donde no
+    //    se ve nada, y es el unico mensaje del panel que exige accion manual.
+    $t->test('la ruta al reintento manual nombra el desplegable, no solo la pestaña', function ($t) {
+        $src = (string) file_get_contents(dirname(__DIR__) . '/includes/class-admin.php');
+        // El rotulo real del <details> que contiene render_queue_section().
+        $t->assert(str_contains($src, 'Diagnóstico avanzado: cola de reintentos'),
+            'el rotulo del desplegable debe seguir siendo este; si cambia, ' .
+            'actualizar tambien el texto del diagnostico');
+        $t->assert(!str_contains($src, 'reintento manual desde la pestaña Log'),
+            'ruta incompleta: en la pestaña Log el bloque esta plegado');
+    });
+
     $t->suite('F4 — el diagnostico combinado del estandar');
 
     // Las dos señales juntas son las que distinguen los dos fallos, que es
