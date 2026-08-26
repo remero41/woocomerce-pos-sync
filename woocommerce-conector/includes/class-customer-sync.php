@@ -76,7 +76,10 @@ class TPV_Sync_Customer_Sync
                 delete_user_meta($userId, self::TPV_CUSTOMER_META);
                 $this->log('warn', $userId, "PATCH /customers/$tpvId 404 → meta huérfano, recreando");
                 $tpvId = 0;
-            } elseif (!empty($r['error']) || !empty($r['errors']) || !empty($r['type'])) {
+            } elseif (!TPV_Sync_API_Client::fueBien($r)) {
+                // BUG-A: rama de FALLO. La rama isNotFound de arriba se conserva
+                // INTACTA: alli el 404 no es un fallo, es la senal de que el meta
+                // quedo huerfano y hay que recrear el cliente.
                 $this->log('error', $userId, $this->formatApiError($r));
                 return;
             } else {
@@ -113,7 +116,7 @@ class TPV_Sync_Customer_Sync
         if ($tpvId === 0) return; // sin mapping, nada que hacer
 
         $r = $this->api->delete("/customers/$tpvId");
-        if (!empty($r['error']) || !empty($r['errors'])) {
+        if (!TPV_Sync_API_Client::fueBien($r)) {   // BUG-A: rama de FALLO
             $this->log('error', $tpvId, "DELETE /customers/$tpvId falló: " . $this->formatApiError($r));
             return;
         }

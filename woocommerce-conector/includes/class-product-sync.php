@@ -809,7 +809,9 @@ class TPV_Sync_Product_Sync
         if (empty($bulkPayloads)) { return $stats; }
 
         $resp = $this->api->post('/products/bulk', ['items' => $bulkPayloads]);
-        if (!empty($resp['error']) || !empty($resp['errors'])) {
+        // BUG-A: rama de FALLO — se niega fueBien(). Antes un 4xx/5xx sin la clave
+        // 'errors' no entraba aqui y el bulk se daba por bueno sin fallback.
+        if (!TPV_Sync_API_Client::fueBien($resp)) {
             // Bulk falló entero → fallback singular para no perder catálogo.
             $err0 = $resp['errors'][0] ?? [];
             $msg = ($err0['field'] ?? '') !== ''
