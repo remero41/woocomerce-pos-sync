@@ -26,6 +26,7 @@ require_once TPV_SYNC_DIR . 'includes/class-order-sync.php';
 require_once TPV_SYNC_DIR . 'includes/class-customer-sync.php';
 require_once TPV_SYNC_DIR . 'includes/class-webhook-handler.php';
 require_once TPV_SYNC_DIR . 'includes/class-queue.php';
+require_once TPV_SYNC_DIR . 'includes/class-sync-health.php';
 require_once TPV_SYNC_DIR . 'includes/class-notifications.php';
 require_once TPV_SYNC_DIR . 'includes/class-admin.php';
 
