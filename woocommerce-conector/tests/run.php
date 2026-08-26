@@ -92,8 +92,10 @@ $t = new WooTestRunner();
 
 require_once __DIR__ . '/test_api_client_parse.php';
 require_once __DIR__ . '/test_queue_success.php';
+require_once __DIR__ . '/test_auth_401_diagnostico.php';
 
 run_api_client_parse_tests($t);
 run_queue_success_tests($t);
+run_auth_401_diagnostico_tests($t);
 
 exit($t->summary());
