@@ -248,6 +248,48 @@ class TPV_Sync_Admin
             --cc-danger-bg: #fef2f2;
         }
 
+        /* ── Panel de estado de sincronización (F4) ────────────────────────
+           Sobrio a propósito: son datos de diagnóstico, no una tarjeta de
+           marketing. Sin fondos de color en las celdas — el color va solo en
+           la cifra, que es lo que hay que leer de un vistazo. */
+        .cc-health { display: block; }
+        .cc-health-head {
+            display: flex; align-items: baseline; gap: 12px;
+            flex-wrap: wrap; margin-bottom: 14px;
+        }
+        .cc-health-head h2 { margin: 0; font-size: 15px; }
+        .cc-health-diag { font-size: 13px; color: var(--cc-muted); line-height: 1.5; }
+        .cc-health-diag.cc-h-warn { color: var(--cc-warn); }
+        .cc-health-diag.cc-h-err  { color: var(--cc-danger); }
+        .cc-health-grid {
+            display: grid; gap: 1px; background: var(--cc-border);
+            border: 1px solid var(--cc-border); border-radius: 10px;
+            overflow: hidden;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        }
+        .cc-health-cell {
+            background: var(--cc-surface); padding: 12px 14px;
+            display: flex; flex-direction: column; gap: 4px;
+        }
+        .cc-health-label {
+            font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+            color: var(--cc-muted-light);
+        }
+        .cc-health-value { font-size: 18px; font-weight: 600; color: var(--cc-ink); }
+        .cc-health-value small { font-size: 12px; font-weight: 400; color: var(--cc-muted); }
+        .cc-health-value.cc-h-ok   { color: var(--cc-success-ink); }
+        .cc-health-value.cc-h-warn { color: var(--cc-warn); }
+        .cc-health-value.cc-h-err  { color: var(--cc-danger); }
+        .cc-health-lasterr {
+            margin: 12px 0 0; font-size: 12px; color: var(--cc-muted);
+            display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;
+        }
+        .cc-health-lasterr code {
+            background: var(--cc-border-soft); padding: 2px 6px;
+            border-radius: 4px; font-size: 12px; color: var(--cc-ink-soft);
+        }
+        .cc-health-when { color: var(--cc-muted-light); }
+
         body.toplevel_page_tpv-sync,
         body[class*="catinfog-conector"] { background: var(--cc-bg); }
         body.toplevel_page_tpv-sync #wpcontent,
@@ -1212,7 +1254,12 @@ class TPV_Sync_Admin
             $api = new TPV_Sync_API_Client();
             if ($api->isConfigured()) {
                 $r = $api->post('/auth/verify', []);
-                $ok = is_array($r) && empty($r['error']) && empty($r['errors']);
+                // BUG-A — EL PEOR DE LOS OCHO. Este es el semaforo que el
+                // comerciante mira para saber si sincroniza. Decidia salud con
+                // "el cuerpo no trae la clave errors", y como problem+json nunca
+                // la trae, daba VERDE ante credenciales revocadas, un 500 del
+                // servidor o un 502 del proxy: mentia justo cuando importaba.
+                $ok = TPV_Sync_API_Client::fueBien($r);
             }
         } catch (Throwable $e) {
             $ok = false;
@@ -1229,6 +1276,16 @@ class TPV_Sync_Admin
         }
         $tab = sanitize_key($_GET['tab'] ?? 'home');
         $statusState = $this->resolveConnectionState();
+
+        // BUG-F (2026-08-26): 'down' colapsa dos situaciones muy distintas —
+        // el TPV caido y unas credenciales que ya no valen. Los textos de
+        // 'down' asumian siempre la primera, asi que con un secret invalido
+        // la pantalla mostraba "el TPV no responde, verifica que este online"
+        // con el TPV perfectamente online, mandando al comerciante a revisar
+        // su servidor. El estado sigue siendo 'down' (lo es); lo que cambia
+        // es QUE se le cuenta.
+        $badCredsOpt = get_option('tpv_sync_invalid_credentials');
+        $badCreds    = is_array($badCredsOpt) && !empty($badCredsOpt['at']);
         ?>
         <div class="wrap cc-wrap">
 
@@ -1263,8 +1320,7 @@ class TPV_Sync_Admin
             // corresponden a ningún conector del TPV (típico tras eliminar
             // el conector en el TPV o pegar credenciales de otra tienda por
             // error). Distinto del decrypt fail: aquí el descifrado funcionó.
-            $invalidCreds = get_option('tpv_sync_invalid_credentials');
-            if (is_array($invalidCreds) && !empty($invalidCreds['at']) && empty($decryptFail)):
+            if ($badCreds && empty($decryptFail)):
             ?>
                 <div class="cc-status-chip cc-status-chip-down" style="margin-bottom:8px;">
                     <span class="cc-status-dot"></span>
@@ -1283,6 +1339,10 @@ class TPV_Sync_Admin
                     <span class="cc-status-dot"></span>
                     <span><?= esc_html__('Conexión a medias — completa la configuración abajo', 'tpv-sync') ?></span>
                 </div>
+            <?php elseif ($statusState === 'down' && $badCreds): ?>
+                <?php /* El banner de credenciales de arriba ya da el diagnostico
+                         exacto; repetir aqui "comprueba que el TPV esta accesible"
+                         solo contradice al banner correcto. */ ?>
             <?php elseif ($statusState === 'down'): ?>
                 <div class="cc-status-chip cc-status-chip-down">
                     <span class="cc-status-dot"></span>
@@ -1321,6 +1381,14 @@ class TPV_Sync_Admin
 
     private function render_home_tab(): void
     {
+        // BUG-F: este flag se calcula TAMBIEN en render_page(), pero son
+        // metodos distintos y la variable no cruza el ambito. La primera
+        // version del fix condiciono la tarjeta con la $badCreds de alla y
+        // el ternario evaluaba null (falsy) → seguia saliendo el texto de
+        // "el TPV no responde" con el TPV online. Se recalcula aqui.
+        $badCredsOpt = get_option('tpv_sync_invalid_credentials');
+        $badCreds    = is_array($badCredsOpt) && !empty($badCredsOpt['at']);
+
         $nonce      = wp_create_nonce('tpv_sync');
         $api        = new TPV_Sync_API_Client();
         $configured = $api->isConfigured();
@@ -1783,11 +1851,17 @@ class TPV_Sync_Admin
         <div class="cc-step cc-step-action cc-step-action-down">
             <div class="cc-step-head">
                 <span class="cc-step-num">!</span>
-                <h2><?= esc_html__('Sin conexión con el TPV', 'tpv-sync') ?></h2>
-                <span class="cc-step-badge cc-badge-err">●&nbsp;<?= esc_html__('Caído', 'tpv-sync') ?></span>
+                <h2><?= $badCreds
+                        ? esc_html__('Credenciales no válidas', 'tpv-sync')
+                        : esc_html__('Sin conexión con el TPV', 'tpv-sync') ?></h2>
+                <span class="cc-step-badge cc-badge-err">●&nbsp;<?= $badCreds
+                        ? esc_html__('Sin acceso', 'tpv-sync')
+                        : esc_html__('Caído', 'tpv-sync') ?></span>
             </div>
             <p class="cc-step-help">
-                <?= esc_html__('La sincronización está activa pero el TPV no responde. Verifica que el TPV esté online.', 'tpv-sync') ?>
+                <?= $badCreds
+                    ? esc_html__('El TPV responde, pero rechaza estas credenciales. Vuelve a pegar el Client ID y el Secret desde el panel del TPV.', 'tpv-sync')
+                    : esc_html__('La sincronización está activa pero el TPV no responde. Verifica que el TPV esté online.', 'tpv-sync') ?>
             </p>
             <div class="cc-action-row">
                 <button type="button" class="cc-btn-action" id="cc-test-conn-big">
@@ -1798,6 +1872,85 @@ class TPV_Sync_Admin
                 </button>
                 <span id="cc-conn-result" class="cc-result"></span>
             </div>
+        </div>
+        <?php endif; ?>
+
+        <?php /* ── PANEL DE ESTADO DE SINCRONIZACIÓN (F4) ──────────────────
+             El estándar del nicho diagnostica con dos señales cruzadas:
+             marca de última sync + pendientes en cola. Cada una por separado
+             no distingue "la cola desborda al ejecutor" de "la sincronización
+             está muerta", que piden acciones opuestas.
+
+             La cola ya se contaba, pero en una pestaña rotulada "solo útil
+             para diagnóstico"; el breaker existía y no se mostraba en ningún
+             sitio; la marca de última sync no existía. Aquí van las cuatro
+             juntas y en la Home, que es donde se mira. */ ?>
+        <?php if ($opSubState !== null && class_exists('TPV_Sync_Health')):
+            $h = TPV_Sync_Health::snapshot();
+            $lvlClass = ['ok' => 'cc-h-ok', 'warn' => 'cc-h-warn', 'err' => 'cc-h-err'];
+            $ago = function (?int $sec): string {
+                if ($sec === null) return __('nunca', 'tpv-sync');
+                if ($sec < 60)     return sprintf(__('hace %d s', 'tpv-sync'), $sec);
+                if ($sec < 3600)   return sprintf(__('hace %d min', 'tpv-sync'), intdiv($sec, 60));
+                if ($sec < 86400)  return sprintf(__('hace %d h', 'tpv-sync'), intdiv($sec, 3600));
+                return sprintf(__('hace %d días', 'tpv-sync'), intdiv($sec, 86400));
+            };
+            // El diagnóstico en una frase: qué pasa y qué mirar. Un color solo
+            // dice que algo va mal; esto dice el qué.
+            $diagText = [
+                'healthy' => __('Todo al día.', 'tpv-sync'),
+                'backlog' => __('El TPV responde, pero la cola crece más rápido de lo que se vacía. Si no baja sola, lanza una sincronización manual.', 'tpv-sync'),
+                'stalled' => __('Hace demasiado que no se sincroniza nada. Revisa la conexión con el TPV y que el cron de WordPress se esté ejecutando.', 'tpv-sync'),
+                // La ruta completa importa: en la pestaña Log el bloque de la
+                // cola está dentro de un <details> PLEGADO. Decir solo
+                // "pestaña Log" lleva a una pantalla donde no se ve nada, y
+                // este es el único diagnóstico que exige acción manual.
+                'dropped' => __('Hay cambios que se han dado por perdidos tras agotar los reintentos. Para reintentarlos: pestaña Log → «Diagnóstico avanzado: cola de reintentos».', 'tpv-sync'),
+            ][$h['diagnosis']['kind']] ?? '';
+        ?>
+        <div class="cc-step cc-health">
+            <div class="cc-health-head">
+                <h2><?= esc_html__('Estado de la sincronización', 'tpv-sync') ?></h2>
+                <span class="cc-health-diag <?= esc_attr($lvlClass[$h['diagnosis']['level']] ?? '') ?>">
+                    <?= esc_html($diagText) ?>
+                </span>
+            </div>
+            <div class="cc-health-grid">
+                <div class="cc-health-cell">
+                    <span class="cc-health-label"><?= esc_html__('Última sincronización', 'tpv-sync') ?></span>
+                    <span class="cc-health-value <?= esc_attr($lvlClass[$h['freshness']] ?? '') ?>">
+                        <?= esc_html($ago($h['age'])) ?>
+                    </span>
+                </div>
+                <div class="cc-health-cell">
+                    <span class="cc-health-label"><?= esc_html__('Pendientes en cola', 'tpv-sync') ?></span>
+                    <span class="cc-health-value <?= esc_attr($lvlClass[$h['queue_level']] ?? '') ?>">
+                        <?= (int) $h['pending'] ?><?php if ($h['abandoned'] > 0): ?>
+                            <small><?= sprintf(
+                                esc_html(_n(' · %d abandonada', ' · %d abandonadas', (int) $h['abandoned'], 'tpv-sync')),
+                                (int) $h['abandoned']
+                            ) ?></small>
+                        <?php endif; ?>
+                    </span>
+                </div>
+                <div class="cc-health-cell">
+                    <span class="cc-health-label"><?= esc_html__('Conexión', 'tpv-sync') ?></span>
+                    <span class="cc-health-value <?= esc_attr($lvlClass[$h['breaker_level']] ?? '') ?>">
+                        <?= $h['breaker'] === 'open'
+                            ? esc_html__('en pausa por errores', 'tpv-sync')
+                            : ($h['breaker'] === 'half_open'
+                                ? esc_html__('reintentando', 'tpv-sync')
+                                : esc_html__('estable', 'tpv-sync')) ?>
+                    </span>
+                </div>
+            </div>
+            <?php if (!empty($h['last_error']['message'])): ?>
+            <p class="cc-health-lasterr">
+                <?= esc_html__('Último error:', 'tpv-sync') ?>
+                <code><?= esc_html(mb_substr((string) $h['last_error']['message'], 0, 180)) ?></code>
+                <span class="cc-health-when"><?= esc_html($h['last_error']['created_at'] ?? '') ?></span>
+            </p>
+            <?php endif; ?>
         </div>
         <?php endif; ?>
 
@@ -3002,7 +3155,7 @@ class TPV_Sync_Admin
                 if ($tpvId <= 0) continue;
                 try {
                     $r = $api->delete("/products/$tpvId");
-                    if (empty($r['error']) && empty($r['errors']) && empty($r['type'])) {
+                    if (TPV_Sync_API_Client::fueBien($r)) {   // BUG-A: rama de EXITO
                         $deletedInTpv++;
                     } else {
                         $deleteErrors++;
