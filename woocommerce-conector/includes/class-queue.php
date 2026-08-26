@@ -212,7 +212,11 @@ class TPV_Sync_Queue
                     'reason'          => $reason,
                     'comment'         => (string)($payload['comment'] ?? 'fallback queue'),
                 ]);
-                return empty($r['errors']) && empty($r['error']);
+                // BUG-A: esto era `empty($r['errors']) && empty($r['error'])`. Un
+                // 404/502/429 no trae esas claves, asi que el ajuste de stock se
+                // marcaba aplicado y se BORRABA de la cola: WC y el TPV divergian
+                // sin senal y sin nadie que reintentara.
+                return TPV_Sync_API_Client::fueBien($r);
 
             case 'stock.push_var':
                 $tpvProd = (int)($payload['tpv_product_id'] ?? 0);
@@ -220,7 +224,7 @@ class TPV_Sync_Queue
                 $qty     = (float)($payload['qty']          ?? 0);
                 if (!$tpvProd || !$povId) return true;
                 $r = $this->api->patch("/products/$tpvProd/variants/$povId", ['quantity' => $qty]);
-                return empty($r['errors']) && empty($r['error']);
+                return TPV_Sync_API_Client::fueBien($r);   // BUG-A: idem, para variantes
 
             case 'order.send':
                 $wcOrderId = (int)($payload['wc_order_id'] ?? 0);

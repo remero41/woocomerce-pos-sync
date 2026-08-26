@@ -491,7 +491,8 @@ class TPV_Sync_API_Client
         if (is_wp_error($response)) {
             $this->log('error', 'http', 0, $method . ' ' . $path . ': ' . $response->get_error_message());
             if ($this->breaker) $this->breaker->recordFailure();
-            return ['error' => $response->get_error_message()];
+            // _status=0: no hubo respuesta HTTP (DNS, timeout, TLS). _ok=false.
+            return ['error' => $response->get_error_message(), '_status' => 0, '_ok' => false];
         }
 
         $code = wp_remote_retrieve_response_code($response);
@@ -537,7 +538,53 @@ class TPV_Sync_API_Client
             if ($this->breaker) $this->breaker->recordSuccess();
         }
 
+        return self::decide($code, $body);
+    }
+
+    /**
+     * Enriquece el cuerpo de la respuesta con el veredicto HTTP.
+     *
+     * BUG-A (auditoria 2026-08-26): parse() devolvia SOLO el cuerpo. El status se
+     * calculaba, alimentaba al breaker y al log, y se DESCARTABA. Ocho puntos de
+     * este plugin concluian exito con "empty(errors) && empty(error)" — y este
+     * mismo cliente NEGOCIA application/problem+json en el Accept (linea ~414),
+     * un formato de error que NO lleva la clave 'errors'. Resultado: un 4xx se
+     * daba por bueno. Igual un 502 de proxy (cuerpo HTML, json_decode → []) o un
+     * 429 tras agotar reintentos.
+     *
+     * Guion bajo en las claves para no colisionar con el payload de la API.
+     *
+     * Pura a proposito (static, sin $this, sin wp_*): es lo que permite testearla
+     * sin WordPress ni red. No la hagas depender del estado del cliente.
+     */
+    public static function decide(int $code, array $body): array
+    {
+        $body['_status'] = $code;
+        $body['_ok']     = ($code >= 200 && $code < 300);
         return $body;
+    }
+
+    /**
+     * Exito = lo dice el status HTTP. NUNCA "el cuerpo no trae la clave errors":
+     * problem+json, el HTML de un 502 y un 429 agotado no la traen, y colaban
+     * como exito (BUG-A).
+     *
+     * El fallback por cuerpo solo actua si quien llama no paso por decide()
+     * (respuesta forjada en un test antiguo, o un array construido a mano), e
+     * incluye 'type' para unificar el antipatron hermano: cuatro sitios miraban
+     * $r['type'] y acertaban POR ACCIDENTE — detectaban el error por la forma del
+     * cuerpo, no por el status. Funcionaban, pero enmascaraban el diagnostico y
+     * dejaban dos criterios de verdad conviviendo.
+     */
+    public static function fueBien(mixed $r): bool
+    {
+        if (is_array($r) && array_key_exists('_ok', $r)) {
+            return (bool) $r['_ok'];
+        }
+        return is_array($r)
+            && empty($r['errors'])
+            && empty($r['error'])
+            && empty($r['type']);
     }
 
     public function isConfigured(): bool

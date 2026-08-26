@@ -1212,7 +1212,12 @@ class TPV_Sync_Admin
             $api = new TPV_Sync_API_Client();
             if ($api->isConfigured()) {
                 $r = $api->post('/auth/verify', []);
-                $ok = is_array($r) && empty($r['error']) && empty($r['errors']);
+                // BUG-A — EL PEOR DE LOS OCHO. Este es el semaforo que el
+                // comerciante mira para saber si sincroniza. Decidia salud con
+                // "el cuerpo no trae la clave errors", y como problem+json nunca
+                // la trae, daba VERDE ante credenciales revocadas, un 500 del
+                // servidor o un 502 del proxy: mentia justo cuando importaba.
+                $ok = TPV_Sync_API_Client::fueBien($r);
             }
         } catch (Throwable $e) {
             $ok = false;
@@ -3002,7 +3007,7 @@ class TPV_Sync_Admin
                 if ($tpvId <= 0) continue;
                 try {
                     $r = $api->delete("/products/$tpvId");
-                    if (empty($r['error']) && empty($r['errors']) && empty($r['type'])) {
+                    if (TPV_Sync_API_Client::fueBien($r)) {   // BUG-A: rama de EXITO
                         $deletedInTpv++;
                     } else {
                         $deleteErrors++;
