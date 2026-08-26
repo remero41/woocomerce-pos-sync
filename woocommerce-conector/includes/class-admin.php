@@ -1901,7 +1901,11 @@ class TPV_Sync_Admin
                 'healthy' => __('Todo al día.', 'tpv-sync'),
                 'backlog' => __('El TPV responde, pero la cola crece más rápido de lo que se vacía. Si no baja sola, lanza una sincronización manual.', 'tpv-sync'),
                 'stalled' => __('Hace demasiado que no se sincroniza nada. Revisa la conexión con el TPV y que el cron de WordPress se esté ejecutando.', 'tpv-sync'),
-                'dropped' => __('Hay cambios que se han dado por perdidos tras agotar los reintentos. Requieren reintento manual desde la pestaña Log.', 'tpv-sync'),
+                // La ruta completa importa: en la pestaña Log el bloque de la
+                // cola está dentro de un <details> PLEGADO. Decir solo
+                // "pestaña Log" lleva a una pantalla donde no se ve nada, y
+                // este es el único diagnóstico que exige acción manual.
+                'dropped' => __('Hay cambios que se han dado por perdidos tras agotar los reintentos. Para reintentarlos: pestaña Log → «Diagnóstico avanzado: cola de reintentos».', 'tpv-sync'),
             ][$h['diagnosis']['kind']] ?? '';
         ?>
         <div class="cc-step cc-health">
@@ -1922,7 +1926,10 @@ class TPV_Sync_Admin
                     <span class="cc-health-label"><?= esc_html__('Pendientes en cola', 'tpv-sync') ?></span>
                     <span class="cc-health-value <?= esc_attr($lvlClass[$h['queue_level']] ?? '') ?>">
                         <?= (int) $h['pending'] ?><?php if ($h['abandoned'] > 0): ?>
-                            <small><?= sprintf(esc_html__(' · %d abandonadas', 'tpv-sync'), (int) $h['abandoned']) ?></small>
+                            <small><?= sprintf(
+                                esc_html(_n(' · %d abandonada', ' · %d abandonadas', (int) $h['abandoned'], 'tpv-sync')),
+                                (int) $h['abandoned']
+                            ) ?></small>
                         <?php endif; ?>
                     </span>
                 </div>
