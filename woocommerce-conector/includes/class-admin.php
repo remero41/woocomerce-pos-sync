@@ -1592,7 +1592,11 @@ class TPV_Sync_Admin
                 if (resp.success && typeof resp.data.total === 'number') {
                     $('#cc-count-tpv').text(resp.data.total + ' <?= esc_js(__('productos', 'tpv-sync')) ?>');
                 } else {
-                    $('#cc-count-tpv').text('—');
+                    // "—" = no se pudo saber. NUNCA "0 productos": un cero
+                    // falso hace creer que el catalogo del TPV esta vacio.
+                    // El motivo va en el title para poder diagnosticarlo.
+                    $('#cc-count-tpv').text('—').attr('title',
+                        (resp && resp.data) ? String(resp.data) : '');
                 }
             }).fail(function() { $('#cc-count-tpv').text('—'); });
 
@@ -2711,7 +2715,18 @@ class TPV_Sync_Admin
             // colgado. Los 3198 con status=0 son productos ocultos en el
             // TPV que no queremos materializar como publicados en WC.
             $resp = $api->get('/products', ['per_page' => 1, 'count' => 1, 'status' => 1]);
-            $total = (int) ($resp['meta']['total'] ?? $resp['total'] ?? 0);
+            // null = no se pudo saber. NO lo convertimos en 0: un "0 productos"
+            // por un fallo de la API hace creer al comerciante que ha perdido
+            // el catalogo (visto en produccion el 22-09-2026 con un 400).
+            $total = TPV_Sync_API_Client::totalDeConteo($resp);
+            if ($total === null) {
+                $status = (int) ($resp['_status'] ?? 0);
+                wp_send_json_error(sprintf(
+                    /* translators: %d: codigo de estado HTTP */
+                    __('No se pudo consultar el catalogo del TPV (HTTP %d).', 'tpv-sync'),
+                    $status
+                ));
+            }
             wp_send_json_success(['total' => $total]);
         } catch (Throwable $e) {
             wp_send_json_error($e->getMessage());
