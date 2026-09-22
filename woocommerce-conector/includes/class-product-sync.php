@@ -1636,17 +1636,84 @@ class TPV_Sync_Product_Sync
     }
 
     /**
-     * Envía las imágenes del producto WC al TPV via POST /products/{id}/images
-     * con `image_url`. La API descarga el archivo (validando dominio).
+     * Decide QUE operaciones de imagen hay que mandar. Funcion pura: sin
+     * WordPress y sin red, para poder fijarla con tests.
+     *
+     * Devuelve operaciones con la forma que espera POST /batch:
+     *   ['method' => 'POST', 'path' => '/products/N/images', 'body' => [...]]
+     *
+     * $yaEnviadas es el meta `_tpv_images_sent` (url => id): lo que ya subio
+     * no se reenvia, para que relanzar el volcado no duplique imagenes.
+     *
+     * Ojo con el orden: al saltar una imagen de galeria ya enviada, su
+     * posicion se consume igualmente. Es el comportamiento del codigo que
+     * habia, y conservarlo evita reordenar galerias subidas a medias.
+     */
+    public static function buildImageOps(
+        int $tpvId,
+        string $thumbUrl,
+        array $galleryUrls,
+        array $yaEnviadas
+    ): array {
+        $ops = [];
+
+        // 1. La destacada manda: is_main + posicion 0.
+        if ($thumbUrl !== '' && empty($yaEnviadas[$thumbUrl])) {
+            $ops[] = [
+                'method' => 'POST',
+                'path'   => "/products/$tpvId/images",
+                'body'   => [
+                    'image_url'  => $thumbUrl,
+                    'is_main'    => true,
+                    'sort_order' => 0,
+                ],
+            ];
+        }
+
+        // 2. La galeria, ordenada desde 1.
+        $sortOrder = 1;
+        foreach ($galleryUrls as $gUrl) {
+            $gUrl = (string) $gUrl;
+            if ($gUrl === '' || !empty($yaEnviadas[$gUrl])) {
+                $sortOrder++;
+                continue;
+            }
+            $ops[] = [
+                'method' => 'POST',
+                'path'   => "/products/$tpvId/images",
+                'body'   => [
+                    'image_url'  => $gUrl,
+                    'is_main'    => false,
+                    'sort_order' => $sortOrder++,
+                ],
+            ];
+        }
+
+        return $ops;
+    }
+
+    /**
+     * Sube las imagenes de un producto al TPV via POST /products/{id}/images
+     * con `image_url`; la API descarga el archivo (validando dominio).
      *
      * Estrategia idempotente: marcamos cada URL ya enviada con un meta para
      * no reenviar la misma imagen en cada update (la imagen no cambia con
      * los attrs del producto). Si el cliente cambia la imagen destacada en
      * WC, la URL nueva se detecta como no-enviada y se sincroniza.
      *
-     * Solo se envía la imagen destacada (post_thumbnail) y la galería WC.
-     * Las imágenes de variaciones individuales no se envían (el TPV no
+     * Solo se envia la imagen destacada (post_thumbnail) y la galeria WC.
+     * Las imagenes de variaciones individuales no se envian (el TPV no
      * tiene un campo "imagen por variante" — usa la del producto padre).
+     *
+     * PERF (auditoria 22-09-2026): esto mandaba UN POST por imagen, bloqueante.
+     * Medido en produccion: 625 de 782 peticiones del volcado eran imagenes —
+     * el 80% del trafico — y el producto 454 se llevo 8 peticiones el solo.
+     * A ~25 productos/minuto, 2499 productos eran ~100 horas.
+     *
+     * Ahora las agrupa en POST /batch (50 operaciones por llamada, limite de
+     * BatchController::MAX_OPERATIONS). Las mismas 625 imagenes salen en 13
+     * llamadas. El BatchController reusa RouteTable, asi que cada sub-request
+     * ejecuta exactamente el mismo controlador que antes.
      */
     private function push_images_to_tpv(int $postId, $product, int $tpvId): void
     {
@@ -1654,48 +1721,37 @@ class TPV_Sync_Product_Sync
 
         $alreadySent = (array) get_post_meta($postId, '_tpv_images_sent', true);
         if (!is_array($alreadySent)) $alreadySent = [];
-        $sent = $alreadySent;
 
-        // 1. Imagen destacada → is_main=true en TPV
-        $thumbId = (int) get_post_thumbnail_id($postId);
-        if ($thumbId > 0) {
-            $thumbUrl = (string) wp_get_attachment_url($thumbId);
-            if ($thumbUrl !== '' && empty($sent[$thumbUrl])) {
-                $r = $this->api->post("/products/$tpvId/images", [
-                    'image_url' => $thumbUrl,
-                    'is_main'   => true,
-                    'sort_order' => 0,
-                ]);
-                if (!empty($r['data'])) {
-                    $sent[$thumbUrl] = (string) ($r['data']['image'] ?? '1');
-                    $this->log('ok', $tpvId, "Imagen principal sincronizada al TPV (post=$postId)");
-                } else {
-                    $this->log('warn', $tpvId, "POST imagen principal falló: " . substr(json_encode($r), 0, 200));
-                }
-            }
-        }
+        $thumbId  = (int) get_post_thumbnail_id($postId);
+        $thumbUrl = $thumbId > 0 ? (string) wp_get_attachment_url($thumbId) : '';
 
-        // 2. Galería del producto WC → entradas en oc_product_image
         $galleryIds = $product && method_exists($product, 'get_gallery_image_ids')
             ? (array) $product->get_gallery_image_ids() : [];
-        $sortOrder = 1;
+        $galleryUrls = [];
         foreach ($galleryIds as $gid) {
             $gid = (int) $gid;
-            if ($gid <= 0) continue;
-            $gUrl = (string) wp_get_attachment_url($gid);
-            if ($gUrl === '' || !empty($sent[$gUrl])) {
-                $sortOrder++;
-                continue;
-            }
-            $r = $this->api->post("/products/$tpvId/images", [
-                'image_url'  => $gUrl,
-                'is_main'    => false,
-                'sort_order' => $sortOrder++,
-            ]);
-            if (!empty($r['data'])) {
-                $sent[$gUrl] = (string) ($r['data']['image'] ?? '1');
+            $galleryUrls[] = $gid > 0 ? (string) wp_get_attachment_url($gid) : '';
+        }
+
+        $ops = self::buildImageOps($tpvId, $thumbUrl, $galleryUrls, $alreadySent);
+        if (empty($ops)) return;
+
+        $resp    = $this->api->batch($ops);
+        $results = $resp['results'] ?? [];
+
+        // Marcamos como enviada SOLO la que el TPV confirmo. Si una falla, se
+        // reintenta en la proxima pasada en vez de darse por subida.
+        $sent = $alreadySent;
+        foreach ($results as $r) {
+            $idx = (int) ($r['index'] ?? -1);
+            if ($idx < 0 || !isset($ops[$idx])) continue;
+            $status = (int) ($r['status'] ?? 0);
+            $url    = (string) $ops[$idx]['body']['image_url'];
+            if ($status >= 200 && $status < 300) {
+                $sent[$url] = (string) ($r['body']['data']['image'] ?? '1');
             } else {
-                $this->log('warn', $tpvId, "POST imagen galería falló: " . substr(json_encode($r), 0, 200));
+                $this->log('warn', $tpvId,
+                    "Imagen no subida (post=$postId status=$status): " . substr($url, 0, 120));
             }
         }
 

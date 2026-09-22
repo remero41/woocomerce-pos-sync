@@ -112,10 +112,12 @@ require_once __DIR__ . '/test_api_client_parse.php';
 require_once __DIR__ . '/test_queue_success.php';
 require_once __DIR__ . '/test_auth_401_diagnostico.php';
 require_once __DIR__ . '/test_sync_health_panel.php';
+require_once __DIR__ . '/test_imagenes_batch.php';
 
 run_api_client_parse_tests($t);
 run_queue_success_tests($t);
 run_auth_401_diagnostico_tests($t);
 run_sync_health_panel_tests($t);
+run_imagenes_batch_tests($t);
 
 exit($t->summary());
