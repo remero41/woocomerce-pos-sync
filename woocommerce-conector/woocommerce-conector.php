@@ -29,6 +29,20 @@ require_once TPV_SYNC_DIR . 'includes/class-queue.php';
 require_once TPV_SYNC_DIR . 'includes/class-sync-health.php';
 require_once TPV_SYNC_DIR . 'includes/class-notifications.php';
 require_once TPV_SYNC_DIR . 'includes/class-admin.php';
+require_once TPV_SYNC_DIR . 'includes/class-updater.php';
+
+// ─── Actualización automática desde GitHub Releases ──────────────────────────
+// Sin esto, WordPress no se entera nunca de que hay una versión nueva (solo
+// vigila wordpress.org) y cada tienda se queda en la versión que le
+// instalaron hasta que alguien entra a subirle el ZIP a mano.
+//
+// Se registra siempre, no solo en el admin: el cron de WordPress también
+// comprueba actualizaciones, y las actualizaciones automáticas de fondo
+// pasan por ahí.
+(new TPV_Sync_Updater(
+    plugin_basename(__FILE__),
+    TPV_SYNC_VERSION
+))->registrar();
 
 // WP-CLI commands (solo si estamos en contexto WP-CLI).
 if (defined('WP_CLI') && WP_CLI) {

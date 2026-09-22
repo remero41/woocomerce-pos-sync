@@ -113,6 +113,7 @@ require_once __DIR__ . '/test_queue_success.php';
 require_once __DIR__ . '/test_auth_401_diagnostico.php';
 require_once __DIR__ . '/test_sync_health_panel.php';
 require_once __DIR__ . '/test_imagenes_batch.php';
+require_once __DIR__ . '/test_actualizador.php';
 
 run_api_client_parse_tests($t);
 run_queue_success_tests($t);
@@ -122,5 +123,6 @@ run_imagenes_batch_tests($t);
 run_contador_honesto_tests($t);
 run_bulk_variantes_tests($t);
 run_conteo_coherente_tests($t);
+run_actualizador_tests($t);
 
 exit($t->summary());
