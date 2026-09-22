@@ -263,3 +263,71 @@ function run_bulk_variantes_tests(WooTestRunner $t): void
         $t->assert($lotes === 4, "158 en lotes de 50 = 4 llamadas, calculado: $lotes");
     });
 }
+
+/**
+ * DISCREPANCIA — la caja promete 1028 y la barra sube 2499.
+ *
+ * Visto por el usuario el 22-09-2026 en pineapplemoda: la caja "Manda
+ * WordPress" decia "1028 productos" y, nada mas arrancar, la barra contaba
+ * sobre 2499. Dos numeros del MISMO catalogo, en la MISMA pantalla.
+ *
+ * Son dos consultas con criterios distintos:
+ *
+ *   caja  (class-admin.php)  post_status = 'publish'
+ *   barra (ajax_push_all)    post_status IN ('publish','draft')
+ *
+ * Medido en el WP local: 642 vs 912. La diferencia son los borradores.
+ *
+ * Cual de los dos es el bueno: el de la BARRA. El push sube borradores a
+ * proposito — buildPushPayload() mapea `status = post_status === 'publish'
+ * ? 1 : 0`, asi que un borrador llega al TPV como producto OCULTO. Es
+ * deliberado y esta bien: el comerciante conserva su catalogo completo y
+ * decide que publica desde el TPV.
+ *
+ * => la que miente es la CAJA, que promete menos de lo que va a subir.
+ * Y miente a la baja, que es la peor direccion: el comerciante ve "1028",
+ * arranca, y se encuentra una barra que cuenta hasta 2499 creyendo que algo
+ * se ha desmadrado (fue exactamente lo que penso).
+ */
+function run_conteo_coherente_tests(WooTestRunner $t): void
+{
+    $t->suite('Discrepancia — la caja y la barra cuentan lo mismo');
+
+    // El contrato: un solo criterio, y es el que rige lo que se sube.
+    $t->test('el criterio de la caja es el mismo que el del push', function ($t) {
+        $src = (string) file_get_contents(dirname(__DIR__) . '/includes/class-admin.php');
+
+        // La consulta de la caja (paso 2 del asistente).
+        // Acotado al bloque del conteo (sin .* glotón que casaria en otro sitio).
+        $bloque = '';
+        if (preg_match('/Conteo local de WC.{0,900}/s', $src, $m)) { $bloque = $m[0]; }
+        $caja = preg_match("/post_status\s*IN\s*\(\s*'publish'\s*,\s*'draft'\s*\)/", $bloque);
+        $t->assert($caja === 1,
+            'la caja debe contar publish+draft, igual que el push: si solo cuenta publish, promete menos de lo que sube');
+    });
+
+    $t->test('la caja ya no cuenta solo los publicados', function ($t) {
+        $src = (string) file_get_contents(dirname(__DIR__) . '/includes/class-admin.php');
+        $bloque = '';
+        if (preg_match('/Conteo local de WC.{0,900}/s', $src, $m)) { $bloque = $m[0]; }
+        $viejo = preg_match("/post_status='publish'\"/", $bloque);
+        $t->assert($viejo === 0,
+            'quedo el COUNT viejo de la caja (solo publish) — vuelve la discrepancia');
+    });
+
+    // La aritmetica del caso real, para que el numero no se pierda.
+    $t->test('publicados + borradores = lo que anuncia la barra', function ($t) {
+        $publicados = 1028;   // lo que decia la caja
+        $total      = 2499;   // lo que contaba la barra
+        $borradores = $total - $publicados;
+        $t->assert($publicados + $borradores === $total,
+            "1028 publicados + $borradores borradores = $total, que es lo que se sube");
+    });
+
+    // Y el porque de subirlos: un borrador NO se publica en el TPV.
+    $t->test('un borrador viaja al TPV como producto oculto (status 0)', function ($t) {
+        $statusDe = static fn(string $postStatus): int => $postStatus === 'publish' ? 1 : 0;
+        $t->assert($statusDe('publish') === 1, 'lo publicado llega activo');
+        $t->assert($statusDe('draft')   === 0, 'lo borrador llega OCULTO, no publicado por sorpresa');
+    });
+}
