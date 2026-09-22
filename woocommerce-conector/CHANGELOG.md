@@ -1,3 +1,30 @@
+## 2.1.0
+
+### Rendimiento del volcado inicial
+
+- **Las imagenes viajan agrupadas.** Se subian de una en una: en un volcado
+  medido en produccion, 625 de 782 peticiones eran imagenes (el 80%), y un
+  producto con 8 imagenes se llevaba 8 peticiones. Ahora van en `POST /batch`
+  (50 por llamada): esas 625 salen en 13. Medido: 6 imagenes = 1 peticion.
+
+- **Las altas de productos con variantes tambien se agrupan.** El endpoint
+  `/products/bulk` no acepta `options`, asi que cada producto con tallas o
+  colores iba suelto — en una tienda de ropa, casi el catalogo entero. Ahora
+  las altas se agrupan en `/batch`. Medido: 25 productos = 1 peticion.
+
+### Honestidad
+
+- **El contador del TPV ya no dice "0 productos" cuando falla.** Leia
+  `meta.total ?? 0`, y ese `?? 0` convertia cualquier error en un cero
+  creible: con la API devolviendo 400, la caja decia "0 productos" teniendo
+  186 en el TPV. Ahora muestra "—" cuando no se puede saber.
+
+- **Una imagen solo se marca como subida si el TPV lo confirma con 2xx.**
+  Antes bastaba con que la respuesta trajera `data`. Si el batch no sale, no
+  se marca nada y se reintenta en la siguiente pasada en vez de perderse.
+
+- **Lo que el batch no contesta cuenta como error**, no como enviado.
+
 # Changelog
 
 Todas las versiones notables de este plugin. Formato: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versionado: [SemVer](https://semver.org/).
