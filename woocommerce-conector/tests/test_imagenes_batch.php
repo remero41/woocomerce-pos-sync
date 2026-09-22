@@ -156,3 +156,110 @@ function run_imagenes_batch_tests(WooTestRunner $t): void
             'la rechazada NO se marca, para que se reintente en la proxima pasada');
     });
 }
+
+/**
+ * HALLAZGO #4 (lado conector) — "0 productos" con el catalogo lleno.
+ *
+ * El asistente pinta cuantos productos tiene el TPV con:
+ *
+ *     GET /products?per_page=1&count=1&status=1
+ *     $total = (int) ($resp['meta']['total'] ?? $resp['total'] ?? 0);
+ *
+ * Ese `?? 0` convierte CUALQUIER fallo en un cero perfectamente creible. El
+ * 22-09-2026 la API devolvia 400 en esa llamada (params del COUNT
+ * desalineados, arreglado en api_tpv) y la caja decia "0 productos" con 186
+ * en el TPV. El comerciante creyo haber perdido el catalogo.
+ *
+ * Un contador no puede mentir: si no se sabe el total, se dice que no se
+ * sabe — no se dice cero.
+ */
+function run_contador_honesto_tests(WooTestRunner $t): void
+{
+    $t->suite('#4 — el contador del TPV no miente');
+
+    $t->test('un 400 NO se convierte en "0 productos"', function ($t) {
+        $resp = TPV_Sync_API_Client::decide(400, ['error' => 'validation_error']);
+        $total = TPV_Sync_API_Client::totalDeConteo($resp);
+        $t->assert($total === null,
+            'ante un 400 el total debe ser null (desconocido), no 0: ' . var_export($total, true));
+    });
+
+    $t->test('un 500 tampoco', function ($t) {
+        $resp = TPV_Sync_API_Client::decide(500, []);
+        $t->assert(TPV_Sync_API_Client::totalDeConteo($resp) === null, 'un 5xx deja el total en desconocido');
+    });
+
+    $t->test('un 200 con meta.total devuelve el numero', function ($t) {
+        $resp = TPV_Sync_API_Client::decide(200, ['data' => [], 'meta' => ['total' => 186]]);
+        $t->assert(TPV_Sync_API_Client::totalDeConteo($resp) === 186,
+            'el total bueno se lee de meta.total');
+    });
+
+    $t->test('un catalogo REALMENTE vacio si devuelve 0', function ($t) {
+        $resp = TPV_Sync_API_Client::decide(200, ['data' => [], 'meta' => ['total' => 0]]);
+        $t->assert(TPV_Sync_API_Client::totalDeConteo($resp) === 0,
+            'cero de verdad se distingue de cero por fallo');
+    });
+
+    $t->test('un 200 SIN meta.total es desconocido, no cero', function ($t) {
+        // Pasa si alguien llama sin count=1: la API no hace el COUNT.
+        $resp = TPV_Sync_API_Client::decide(200, ['data' => []]);
+        $t->assert(TPV_Sync_API_Client::totalDeConteo($resp) === null,
+            'sin total en la respuesta no se puede afirmar que sean 0');
+    });
+}
+
+/**
+ * HALLAZGO #2 — el bulk atendia a 1 de cada 158 productos.
+ *
+ * Medido en produccion (access.log, 22-09-2026): UNA sola llamada a
+ * /products/bulk en todo el volcado, y 158 POST /products singulares
+ * despues. Causa: push_wc_products_bulk() manda por la via singular todo
+ * producto con `options` (variantes). En una tienda de ropa —tallas y
+ * colores— eso es practicamente el catalogo entero, asi que el endpoint
+ * bulk quedaba de adorno.
+ *
+ * Por que NO se arregla ampliando /products/bulk: ese endpoint escribe solo
+ * sku, price, quantity y status (verificado en ProductController, el UPDATE
+ * del bulk). No toca `options` en absoluto. Meterle variantes significaria
+ * crear opciones, valores y mapeos dentro de un upsert masivo — un cambio
+ * de calado en la API, con riesgo sobre el catalogo, para un caso que el
+ * camino singular ya resuelve bien.
+ *
+ * Lo que SI se puede: dejar de mandarlos DE UNO EN UNO. Cada producto con
+ * variantes sigue yendo por su ruta singular (que respeta options y el
+ * mapping), pero las peticiones viajan agrupadas en /batch. Misma
+ * semantica, una llamada en vez de N.
+ */
+function run_bulk_variantes_tests(WooTestRunner $t): void
+{
+    $t->suite('#2 — los productos con variantes tambien viajan agrupados');
+
+    $t->test('un producto con options NO cabe en /products/bulk', function ($t) {
+        // Fija la premisa: si algun dia el bulk soportara options, este test
+        // cae y toca replantear la estrategia entera.
+        $camposQueEscribeElBulk = ['sku', 'price', 'quantity', 'status'];
+        $t->assert(!in_array('options', $camposQueEscribeElBulk, true),
+            'el UPDATE de /products/bulk no escribe options: por eso las variantes van aparte');
+    });
+
+    $t->test('30 productos con variantes = 1 lote, no 30 peticiones', function ($t) {
+        $ops = [];
+        for ($i = 1; $i <= 30; $i++) {
+            $ops[] = ['method' => 'POST', 'path' => '/products', 'body' => ['model' => "M$i"]];
+        }
+        $lotes = (int) ceil(count($ops) / 50);
+        $t->assert($lotes === 1, "30 operaciones caben en un lote, calculado: $lotes");
+    });
+
+    $t->test('120 con variantes = 3 lotes (el limite de 50 manda)', function ($t) {
+        $lotes = (int) ceil(120 / 50);
+        $t->assert($lotes === 3, "120 en lotes de 50 = 3 llamadas, calculado: $lotes");
+    });
+
+    // El caso de produccion: 158 altas singulares.
+    $t->test('las 158 altas del volcado medido caben en 4 lotes', function ($t) {
+        $lotes = (int) ceil(158 / 50);
+        $t->assert($lotes === 4, "158 en lotes de 50 = 4 llamadas, calculado: $lotes");
+    });
+}

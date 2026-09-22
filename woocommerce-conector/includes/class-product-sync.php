@@ -788,22 +788,84 @@ class TPV_Sync_Product_Sync
         $stats = ['sent' => 0, 'created' => 0, 'updated' => 0, 'errors' => 0, 'fallback' => 0];
         $bulkPayloads = [];
         $bulkPostIds = [];
+        // Altas de productos con variantes: van en /batch, no en /products/bulk.
+        $variantOps     = [];
+        $variantPostIds = [];
 
         foreach ($postIds as $postId) {
             $postId = (int) $postId;
             $payload = $this->buildPushPayload($postId);
             if ($payload === null) { $stats['errors']++; continue; }
-            // Si tiene variantes, va por singular (preserva options + mapping).
+            // Los productos con variantes no caben en /products/bulk: ese
+            // endpoint escribe solo sku/price/quantity/status y no toca
+            // `options` (ver el UPDATE de ProductController::bulk). Tienen
+            // que ir por la ruta singular, que sincroniza las opciones.
+            //
+            // PERF (auditoria 22-09-2026): eso los mandaba DE UNO EN UNO. En
+            // el volcado medido hubo 1 sola llamada a /products/bulk y 158
+            // POST /products sueltos detras — en una tienda de ropa casi todo
+            // el catalogo tiene tallas o colores, asi que el bulk quedaba de
+            // adorno.
+            //
+            // Ahora se separan en dos grupos:
+            //   - ALTAS (sin mapping local): son el caso del volcado inicial
+            //     y no arrastran la logica delicada del update (404 huerfano,
+            //     reconciliacion por cache). Se agrupan en /batch.
+            //   - ACTUALIZACIONES: siguen por la ruta singular intacta. Su
+            //     manejo del 404 huerfano vive en un unico sitio y no se
+            //     duplica aqui.
             if (!empty($payload['options'])) {
-                $ok = $this->push_wc_product_to_tpv($postId);
-                if ($ok) { $stats['sent']++; } else { $stats['errors']++; }
-                $stats['fallback']++;
+                if ((int) get_post_meta($postId, self::TPV_ID_META, true) > 0) {
+                    // Ya existe en el TPV: ruta singular, sin tocar.
+                    $ok = $this->push_wc_product_to_tpv($postId);
+                    if ($ok) { $stats['sent']++; } else { $stats['errors']++; }
+                    $stats['fallback']++;
+                } else {
+                    unset($payload['__post_id']);
+                    $payload['quantity'] = $this->stockDe($postId);
+                    $variantOps[]     = ['method' => 'POST', 'path' => '/products', 'body' => $payload];
+                    $variantPostIds[] = $postId;
+                }
                 continue;
             }
             // Eliminar el helper interno antes de mandar al TPV.
             unset($payload['__post_id']);
             $bulkPayloads[] = $payload;
             $bulkPostIds[]  = $postId;
+        }
+
+        // Altas con variantes, agrupadas. Cada sub-request ejecuta el mismo
+        // POST /products de siempre: misma semantica, una llamada en vez de N.
+        if (!empty($variantOps)) {
+            $resp    = $this->api->batch($variantOps);
+            $results = $resp['results'] ?? [];
+            $vistos  = [];
+            foreach ($results as $r) {
+                $idx = (int) ($r['index'] ?? -1);
+                if ($idx < 0 || !isset($variantPostIds[$idx])) { continue; }
+                $vistos[$idx] = true;
+                $postId = $variantPostIds[$idx];
+                $status = (int) ($r['status'] ?? 0);
+                $newId  = (int) ($r['body']['data']['product_id'] ?? 0);
+                if ($status >= 200 && $status < 300 && $newId > 0) {
+                    update_post_meta($postId, self::TPV_ID_META, $newId);
+                    $this->push_images_to_tpv($postId, wc_get_product($postId), $newId);
+                    $stats['sent']++;
+                    $stats['created']++;
+                } else {
+                    $stats['errors']++;
+                    $this->log('error', $postId,
+                        "Alta con variantes fallo en /batch (post=$postId status=$status)");
+                }
+            }
+            // Lo que el batch no contesto NO se da por bueno: cuenta como
+            // error para que se reintente, en vez de perderse en silencio.
+            foreach ($variantPostIds as $i => $pid) {
+                if (!isset($vistos[$i])) {
+                    $stats['errors']++;
+                    $this->log('error', $pid, "Alta con variantes sin respuesta del batch (post=$pid)");
+                }
+            }
         }
 
         if (empty($bulkPayloads)) { return $stats; }
@@ -840,6 +902,20 @@ class TPV_Sync_Product_Sync
             $stats['sent']++;
         }
         return $stats;
+    }
+
+    /**
+     * Stock de un producto WC, tal y como lo manda la ruta singular al crear.
+     *
+     * El payload de alta lleva `quantity` (el update NO lo toca, para no
+     * pisar el stock que el TPV lleve contado). Se extrae aqui para que la
+     * via agrupada mande exactamente lo mismo que la singular.
+     */
+    private function stockDe(int $postId): float
+    {
+        $product = function_exists('wc_get_product') ? wc_get_product($postId) : null;
+        if (!$product) { return 0.0; }
+        return (float) ($product->get_stock_quantity() ?? 0);
     }
 
     /**

@@ -119,5 +119,7 @@ run_queue_success_tests($t);
 run_auth_401_diagnostico_tests($t);
 run_sync_health_panel_tests($t);
 run_imagenes_batch_tests($t);
+run_contador_honesto_tests($t);
+run_bulk_variantes_tests($t);
 
 exit($t->summary());

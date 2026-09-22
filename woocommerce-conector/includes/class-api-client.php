@@ -335,6 +335,29 @@ class TPV_Sync_API_Client
         return $response;
     }
 
+    /**
+     * Lee el total de un GET con `count=1`, distinguiendo "cero de verdad"
+     * de "no lo se".
+     *
+     * Devuelve null cuando el total es DESCONOCIDO: la peticion fallo, o
+     * salio bien pero la respuesta no trae total (p. ej. si se llamo sin
+     * count=1 y la API no hizo el COUNT).
+     *
+     * Existe porque el panel hacia `$resp['meta']['total'] ?? 0`, y ese `?? 0`
+     * convierte cualquier fallo en un cero creible. El 22-09-2026 la API
+     * devolvia 400 en GET /products?count=1&status=1 y el asistente decia
+     * "0 productos" con 186 en el TPV: el comerciante creyo haber perdido el
+     * catalogo. Un contador que no sabe tiene que decir que no sabe.
+     */
+    public static function totalDeConteo(array $resp): ?int
+    {
+        if (!self::fueBien($resp)) {
+            return null;
+        }
+        $total = $resp['meta']['total'] ?? $resp['total'] ?? null;
+        return $total === null ? null : (int) $total;
+    }
+
     // ─── Batch: N sub-requests en una llamada HTTP ───────────────────────────
     //
     // Aprovecha el endpoint POST /batch de la API TPV. Reduce ~10× la latencia
