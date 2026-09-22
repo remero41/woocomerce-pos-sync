@@ -1509,9 +1509,18 @@ class TPV_Sync_Admin
 
         <?php
         // Conteo local de WC: rápido, una query.
+        //
+        // MISMO criterio que ajax_push_all(): publish + draft. Si aquí se
+        // contaran solo los publicados, la caja prometería menos de lo que
+        // el push va a subir — y a la baja, que es la peor dirección: el
+        // 22-09-2026 la caja decía "1028 productos" y al arrancar la barra
+        // contaba hasta 2499, con el comerciante creyendo que algo se había
+        // desmadrado. Los borradores SÍ se suben, y llegan al TPV como
+        // productos ocultos (buildPushPayload: status = publish ? 1 : 0).
         global $wpdb;
         $wcCount = (int) $wpdb->get_var(
-            "SELECT COUNT(*) FROM {$wpdb->posts} WHERE post_type='product' AND post_status='publish'"
+            "SELECT COUNT(*) FROM {$wpdb->posts}
+             WHERE post_type = 'product' AND post_status IN ('publish','draft')"
         );
         ?>
 
