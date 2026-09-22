@@ -45,6 +45,35 @@ class TPV_Sync_Order_Sync
         $this->api = $api;
     }
 
+    /**
+     * Los identificadores que lleva una línea de pedido hacia el TPV.
+     *
+     * El TPV modela las variantes como valores de opción del producto padre,
+     * así que la línea siempre va a nombre del padre (`product_id`) y, si se
+     * vendió una talla concreta, la declara en `options`, que es la forma que
+     * exige la API: OrderController lee `$line['options'][]` y por cada
+     * entrada escribe order_option (la venta queda ATRIBUIDA a esa talla) y
+     * mueve el stock de la variante. Un campo suelto en la línea lo ignoraría.
+     *
+     * Sin ese segundo campo el TPV descuenta del total del producto pero no
+     * sabe qué talla salió, y el stock por talla se desincroniza (auditoría
+     * del 22-09-2026). Con él, descuenta de la variante correcta.
+     *
+     * Cuando no hay variante —producto simple, o variación que aún no se ha
+     * mapeado porque se creó en WC después del volcado— el campo NO se manda:
+     * un `product_option_value_id` a 0 haría que el TPV buscase una variante
+     * inexistente y rechazase la línea. Es preferible que descuente del padre
+     * a que la venta entera falle.
+     */
+    public static function idsDeLinea(int $tpvProductId, ?int $tpvOptionValueId): array
+    {
+        $ids = ['product_id' => $tpvProductId];
+        if ($tpvOptionValueId !== null && $tpvOptionValueId > 0) {
+            $ids['options'] = [['product_option_value_id' => $tpvOptionValueId]];
+        }
+        return $ids;
+    }
+
     // ─── WC → TPV: crear pedido ───────────────────────────────────────────────
 
     /**
@@ -84,8 +113,15 @@ class TPV_Sync_Order_Sync
             $lineTaxTot  = method_exists($item, 'get_total_tax') ? (float)$item->get_total_tax() : 0.0;
             $qtySafe     = $qty > 0 ? $qty : 1.0;
 
-            $products[] = [
-                'product_id' => (int)$tpvId,
+            // Qué variante se vendió. get_product_id() devuelve el PADRE; la
+            // talla concreta está en get_variation_id(), y su equivalente en
+            // el TPV en el meta _tpv_option_value_id que dejó el volcado.
+            $povId = 0;
+            if (method_exists($item, 'get_variation_id') && (int) $item->get_variation_id() > 0) {
+                $povId = (int) get_post_meta((int) $item->get_variation_id(), '_tpv_option_value_id', true);
+            }
+
+            $products[] = self::idsDeLinea((int)$tpvId, $povId) + [
                 'name'       => $item->get_name(),
                 'quantity'   => $qty,
                 'price'      => $lineNetTot / $qtySafe,     // unit net

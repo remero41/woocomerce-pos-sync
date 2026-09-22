@@ -3271,6 +3271,11 @@ class TPV_Sync_Admin
                     tpv_sync_module_catalog() ? 'product.updated'  : null,
                     tpv_sync_module_catalog() ? 'product.deleted'  : null,
                     tpv_sync_module_catalog() ? 'stock.adjusted'   : null,
+                    // Stock de UNA variante. Sin pedirlo, vender la última
+                    // talla M en caja no bajaba el stock online: el evento del
+                    // padre no sirve porque en WC el padre de un variable no
+                    // gestiona stock (lo gestiona cada variación).
+                    tpv_sync_module_catalog() ? 'variant.stock_adjusted' : null,
                     tpv_sync_module_catalog() ? 'special.created'  : null,
                     tpv_sync_module_catalog() ? 'special.deleted'  : null,
                     tpv_sync_module_catalog() ? 'variant.created'  : null,

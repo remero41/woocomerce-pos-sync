@@ -331,3 +331,80 @@ function run_conteo_coherente_tests(WooTestRunner $t): void
         $t->assert($statusDe('draft')   === 0, 'lo borrador llega OCULTO, no publicado por sorpresa');
     });
 }
+
+/**
+ * VARIANTES — el stock por talla no cruzaba en NINGUNA de las dos direcciones.
+ *
+ * Auditoría del 22/23-09-2026, ambos reproducidos contra un WordPress real.
+ *
+ * ── Caja → tienda ────────────────────────────────────────────────────────
+ * El TPV vende la talla M, el bridge emite `variant.stock_adjusted`… y el
+ * conector no estaba suscrito (ni podía: no figuraba en VALID_EVENTS de la
+ * API, arreglado en api_tpv 4bdaf52). Quedaba el `stock.adjusted` del padre,
+ * pero en WooCommerce el padre de un variable NO gestiona stock — medido:
+ * 315 de 315 variaciones con manage_stock propio, padre con
+ * manage_stock=false. Resultado medido: stock antes 10, vendes, stock
+ * después 10.
+ *
+ * ── Tienda → caja ────────────────────────────────────────────────────────
+ * send_to_tpv() arma cada línea con `$item->get_product_id()`, que devuelve
+ * el PADRE. `get_variation_id()` —la talla que se vendió— no aparecía ni una
+ * vez en toda la clase, aunque la variación SÍ está mapeada
+ * (_tpv_option_value_id). El TPV recibía la venta a nombre del padre y no
+ * sabía qué talla había salido.
+ */
+function run_variantes_stock_tests(WooTestRunner $t): void
+{
+    $t->suite('Variantes — el stock por talla cruza en ambos sentidos');
+
+    // ── Caja → tienda: hay que pedir el evento ───────────────────────────
+    $t->test('el conector se suscribe a variant.stock_adjusted', function ($t) {
+        $src = (string) file_get_contents(dirname(__DIR__) . '/includes/class-admin.php');
+        $t->assert(str_contains($src, "'variant.stock_adjusted'"),
+            'sin pedirlo, el dispatcher del TPV no lo entrega: la venta de una talla no baja el stock online');
+    });
+
+    $t->test('y sigue pidiendo stock.adjusted (los simples no se tocan)', function ($t) {
+        $src = (string) file_get_contents(dirname(__DIR__) . '/includes/class-admin.php');
+        $t->assert(str_contains($src, "'stock.adjusted'"), 'el evento del producto simple debe seguir');
+    });
+
+    // ── Tienda → caja: la línea debe decir QUÉ talla ─────────────────────
+    $t->test('el pedido identifica la variación vendida', function ($t) {
+        $src = (string) file_get_contents(dirname(__DIR__) . '/includes/class-order-sync.php');
+        $t->assert(str_contains($src, 'get_variation_id'),
+            'sin get_variation_id() el TPV recibe la venta a nombre del padre y no sabe qué talla salió');
+    });
+
+    $t->test('y la traduce al identificador del TPV', function ($t) {
+        $src = (string) file_get_contents(dirname(__DIR__) . '/includes/class-order-sync.php');
+        $t->assert(str_contains($src, '_tpv_option_value_id'),
+            'la variación ya está mapeada: hay que mandar ese id, no el del padre');
+    });
+
+    // ── La decisión pura: qué id manda cada línea ────────────────────────
+    $t->test('una línea con variación manda el pov del TPV', function ($t) {
+        $linea = TPV_Sync_Order_Sync::idsDeLinea(
+            tpvProductId: 100,
+            tpvOptionValueId: 3985
+        );
+        $t->assert($linea['product_id'] === 100, 'el producto sigue siendo el padre en el TPV');
+        // La forma la manda la API: OrderController lee $line['options'][].
+        $t->assert(($linea['options'][0]['product_option_value_id'] ?? null) === 3985,
+            'la talla viaja dentro de options, que es lo que el TPV lee');
+    });
+
+    $t->test('una línea SIN variación no inventa el campo', function ($t) {
+        $linea = TPV_Sync_Order_Sync::idsDeLinea(tpvProductId: 100, tpvOptionValueId: 0);
+        $t->assert($linea['product_id'] === 100, 'producto simple: solo el producto');
+        $t->assert(!array_key_exists('options', $linea),
+            'mandar options con pov=0 haría que el TPV buscase una variante inexistente (404)');
+    });
+
+    $t->test('una variación SIN mapear tampoco lo inventa', function ($t) {
+        // Pasa si la variación se creó en WC después del volcado inicial.
+        $linea = TPV_Sync_Order_Sync::idsDeLinea(tpvProductId: 100, tpvOptionValueId: null);
+        $t->assert(!array_key_exists('options', $linea),
+            'sin mapeo, mejor que el TPV descuente del padre a que falle la venta entera');
+    });
+}
