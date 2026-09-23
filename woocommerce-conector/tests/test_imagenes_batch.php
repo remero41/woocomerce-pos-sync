@@ -408,3 +408,80 @@ function run_variantes_stock_tests(WooTestRunner $t): void
             'sin mapeo, mejor que el TPV descuente del padre a que falle la venta entera');
     });
 }
+
+/**
+ * Al ACTUALIZAR el plugin hay que re-suscribir el webhook.
+ *
+ * La 2.2.0 arregla el stock por talla suscribiéndose a un evento nuevo
+ * (`variant.stock_adjusted`). Pero el webhook de una tienda ya conectada se
+ * creó ANTES, con la lista vieja, y nada lo tocaba al actualizar: el registro
+ * solo ocurría si alguien pulsaba el botón del asistente.
+ *
+ * WebhookDispatcher reparte con `JSON_CONTAINS(events, ?)`, así que un
+ * webhook con la lista vieja NUNCA recibe el evento nuevo. Publicar la 2.2.0
+ * sin esto sería sacar un arreglo que no se activa en ninguna tienda ya
+ * funcionando — justo las que tienen el problema.
+ *
+ * Se usa PATCH /webhooks/{id} (la API acepta `events` y conserva el secret),
+ * no un alta nueva: recrear el webhook rotaría el secret y dejaría un
+ * huérfano en el TPV.
+ */
+function run_resuscripcion_tests(WooTestRunner $t): void
+{
+    $t->suite('Actualizar el plugin re-suscribe el webhook');
+
+    $t->test('la lista de eventos vive en UN solo sitio', function ($t) {
+        $t->assert(method_exists('TPV_Sync_Admin', 'eventosSuscritos'),
+            'si cada sitio arma su lista, una se queda atrás y el evento no llega');
+    });
+
+    $t->test('la lista incluye el evento de stock por variante', function ($t) {
+        $t->assert(in_array('variant.stock_adjusted', TPV_Sync_Admin::eventosSuscritos(true, true), true),
+            'sin él, vender una talla en caja no baja el stock online');
+    });
+
+    $t->test('y los de siempre', function ($t) {
+        $ev = TPV_Sync_Admin::eventosSuscritos(true, true);
+        foreach (['product.created', 'stock.adjusted', 'order.created', 'customer.created'] as $e) {
+            $t->assert(in_array($e, $ev, true), "falta $e");
+        }
+    });
+
+    $t->test('sin módulo de catálogo no se piden eventos de catálogo', function ($t) {
+        $ev = TPV_Sync_Admin::eventosSuscritos(false, true);
+        $t->assert(!in_array('variant.stock_adjusted', $ev, true), 'catálogo desactivado: ni variantes');
+        $t->assert(!in_array('product.created', $ev, true), 'ni altas de producto');
+        $t->assert(in_array('order.created', $ev, true), 'pero los pedidos siguen');
+    });
+
+    $t->test('sin módulo de pedidos no se piden eventos de pedidos', function ($t) {
+        $ev = TPV_Sync_Admin::eventosSuscritos(true, false);
+        $t->assert(!in_array('order.created', $ev, true), 'pedidos desactivados');
+        $t->assert(in_array('stock.adjusted', $ev, true), 'pero el catálogo sigue');
+    });
+
+    // ── ¿Hay que tocar el webhook del TPV? ───────────────────────────────
+    $t->test('una suscripción a la que le falta un evento hay que corregirla', function ($t) {
+        $vieja = ['product.created', 'stock.adjusted', 'order.created'];
+        $t->assert(TPV_Sync_Admin::faltanEventos($vieja, ['product.created', 'stock.adjusted', 'order.created', 'variant.stock_adjusted']) === true,
+            'le falta variant.stock_adjusted: hay que hacer PATCH');
+    });
+
+    $t->test('si ya están todos, NO se toca el webhook', function ($t) {
+        $actual = ['product.created', 'stock.adjusted', 'variant.stock_adjusted'];
+        $t->assert(TPV_Sync_Admin::faltanEventos($actual, ['stock.adjusted', 'product.created']) === false,
+            'un PATCH en cada carga sería ruido contra la API de todas las tiendas');
+    });
+
+    $t->test('el orden no cuenta como diferencia', function ($t) {
+        $t->assert(TPV_Sync_Admin::faltanEventos(['b', 'a'], ['a', 'b']) === false,
+            'la API puede devolver los eventos en otro orden');
+    });
+
+    $t->test('eventos de más en el TPV no disparan un PATCH', function ($t) {
+        // Otra versión pudo suscribir algo que esta ya no pide: no es asunto
+        // nuestro y recortarlo podría romper otra integración.
+        $t->assert(TPV_Sync_Admin::faltanEventos(['a', 'b', 'extra'], ['a', 'b']) === false,
+            'solo importa que no FALTE ninguno de los que pedimos');
+    });
+}
