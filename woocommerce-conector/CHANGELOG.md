@@ -1,3 +1,34 @@
+## 2.2.0
+
+### El stock por talla ya cruza en las dos direcciones
+
+- **Vender una talla en caja ahora baja el stock en la tienda.** El TPV
+  avisaba con `variant.stock_adjusted`, pero el conector no estaba
+  suscrito y el aviso del producto padre no sirve: en WooCommerce el
+  padre de un producto variable no gestiona stock, lo gestiona cada
+  variacion. Medido antes del arreglo: vendias y el stock online seguia
+  igual. ⚠️ Requiere el TPV actualizado (el evento no se podia suscribir).
+
+- **Una venta online dice ahora que talla se ha vendido.** Cada linea
+  viajaba a nombre del producto padre; la variacion, aunque estaba
+  mapeada, no se mencionaba. El TPV descontaba del total sin saber cual
+  salia. Verificado con una venta real: el stock de la talla baja y la
+  venta queda atribuida a ella.
+
+### Actualizaciones automaticas
+
+- **El plugin se actualiza solo.** Hasta ahora WordPress no se enteraba
+  de que habia version nueva (solo vigila wordpress.org) y habia que
+  entrar a cada tienda a subir el ZIP a mano. Ahora aparece el aviso de
+  siempre en Plugins y se actualiza con un clic, sin desinstalar y sin
+  perder la configuracion.
+
+### Correcciones
+
+- **La caja del asistente prometia menos productos de los que subia**
+  (1028 frente a 2499): contaba solo los publicados y el volcado sube
+  tambien los borradores, que llegan al TPV como ocultos.
+
 ## 2.1.0
 
 ### Rendimiento del volcado inicial
