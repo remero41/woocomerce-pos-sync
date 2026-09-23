@@ -520,3 +520,73 @@ function run_lista_unica_tests(WooTestRunner $t): void
             'si falta aquí, falta en los dos caminos a la vez');
     });
 }
+
+/**
+ * El endpoint que RECIBE los webhooks devolvía 404.
+ *
+ * Comprobado el 23-09-2026 contra la tienda real:
+ *
+ *     GET/POST https://pineapplemoda.com/tpv-webhook/  ->  404
+ *
+ * De nada sirve que el TPV cree el webhook si la puerta está cerrada: cada
+ * entrega moriría en un 404 y el TPV acabaría desactivando el webhook por
+ * fallos repetidos.
+ *
+ * RAÍZ — la ruta se declara con add_rewrite_rule() en el hook `init`, y
+ * WordPress solo la aplica tras regenerar los enlaces permanentes. El plugin
+ * llamaba a flush_rewrite_rules() dentro de register_activation_hook, pero
+ * AHÍ TODAVÍA NO SE HA REGISTRADO LA REGLA: el `init` que la añade no ha
+ * corrido, así que se regeneran las reglas SIN ella. Reproducido en un
+ * WordPress real: tras activar el plugin la regla NO aparece en
+ * `rewrite_rules`; solo aparece tras un flush posterior.
+ *
+ * Y con la actualización sobrescribiendo el ZIP —que es lo normal— el hook
+ * de activación ni siquiera se dispara.
+ *
+ * El arreglo no es llamar a flush en cada carga (reconstruye todas las reglas
+ * del sitio, es caro): se deja una marca al activar y se hace UN flush en el
+ * primer `init` siguiente, cuando la regla ya existe.
+ */
+function run_endpoint_webhook_tests(WooTestRunner $t): void
+{
+    $t->suite('El endpoint que recibe los webhooks existe');
+
+    $t->test('el flush no se hace en el hook de activación', function ($t) {
+        $src = (string) file_get_contents(dirname(__DIR__) . '/woocommerce-conector.php');
+        $act = '';
+        if (preg_match('/register_activation_hook\(__FILE__.*?\n\}\);/s', $src, $m)) { $act = $m[0]; }
+        $t->assert(!str_contains($act, 'flush_rewrite_rules'),
+            'en activación la regla aún no está registrada: el flush la deja fuera');
+    });
+
+    $t->test('se deja una marca para hacerlo cuando la regla ya existe', function ($t) {
+        $src = (string) file_get_contents(dirname(__DIR__) . '/woocommerce-conector.php');
+        $t->assert(str_contains($src, 'tpv_sync_flush_rewrite'),
+            'sin marca, tras actualizar sobrescribiendo el ZIP nadie regenera las reglas');
+    });
+
+    $t->test('el flush ocurre en init, después de declarar la regla', function ($t) {
+        $src = (string) file_get_contents(dirname(__DIR__) . '/woocommerce-conector.php');
+        // La regla se declara en register_webhook_endpoint(), enganchada a init.
+        $pos_regla = strpos($src, 'add_rewrite_rule');
+        $pos_flush = strpos($src, 'flush_rewrite_rules');
+        $t->assert($pos_regla !== false && $pos_flush !== false, 'deben existir ambos');
+        $t->assert($pos_flush > $pos_regla,
+            'el flush tiene que ir después de declarar la regla, no antes');
+    });
+
+    $t->test('la marca se borra tras usarla (un solo flush)', function ($t) {
+        $src = (string) file_get_contents(dirname(__DIR__) . '/woocommerce-conector.php');
+        $t->assert(str_contains($src, "delete_option('tpv_sync_flush_rewrite')"),
+            'sin borrarla se regenerarían todas las reglas del sitio en cada carga');
+    });
+
+    // Y la ruta declarada tiene que ser la misma que se le da al TPV.
+    $t->test('la ruta declarada coincide con la que se registra en el TPV', function ($t) {
+        $src   = (string) file_get_contents(dirname(__DIR__) . '/woocommerce-conector.php');
+        $admin = (string) file_get_contents(dirname(__DIR__) . '/includes/class-admin.php');
+        $t->assert(str_contains($src, 'tpv-webhook'), 'la regla usa /tpv-webhook/');
+        $t->assert(str_contains($admin, "home_url('/tpv-webhook/')"),
+            'y al TPV se le da esa misma URL: si divergen, entrega en el vacío');
+    });
+}

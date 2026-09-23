@@ -39,6 +39,15 @@ require_once TPV_SYNC_DIR . 'includes/class-updater.php';
 // Se registra siempre, no solo en el admin: el cron de WordPress también
 // comprueba actualizaciones, y las actualizaciones automáticas de fondo
 // pasan por ahí.
+// Tras actualizar el plugin sobrescribiendo el ZIP, el hook de activación NO
+// se dispara: si la versión trae reglas nuevas (o el sitio nunca las regeneró
+// bien), el endpoint del webhook seguiría dando 404. Marcamos el flush cuando
+// cambia la versión guardada.
+if (get_option('tpv_sync_version_instalada') !== TPV_SYNC_VERSION) {
+    update_option('tpv_sync_version_instalada', TPV_SYNC_VERSION, false);
+    update_option('tpv_sync_flush_rewrite', 1, false);
+}
+
 (new TPV_Sync_Updater(
     plugin_basename(__FILE__),
     TPV_SYNC_VERSION
@@ -158,6 +167,22 @@ class TPV_Sync
     {
         add_rewrite_rule('^tpv-webhook/?$', 'index.php?tpv_webhook=1', 'top');
         add_rewrite_tag('%tpv_webhook%', '1');
+
+        // Regenerar los enlaces permanentes UNA vez, ya con la regla puesta.
+        //
+        // No se hace en el hook de activación porque allí esta función aún no
+        // ha corrido y el flush dejaría la regla fuera: el endpoint respondía
+        // 404 y cada entrega del TPV moría, hasta que el TPV desactivaba el
+        // webhook por fallos repetidos.
+        //
+        // Tampoco se hace en cada carga: reconstruir todas las reglas del
+        // sitio es caro. La marca la pone la activación, y también el
+        // actualizador —al sobrescribir el ZIP el hook de activación ni
+        // siquiera se dispara—.
+        if (get_option('tpv_sync_flush_rewrite')) {
+            delete_option('tpv_sync_flush_rewrite');
+            flush_rewrite_rules();
+        }
     }
 
     public function handle_webhook_request(): void
@@ -265,7 +290,12 @@ register_activation_hook(__FILE__, function () {
     add_option('tpv_sync_module_catalog', 1);
     add_option('tpv_sync_module_orders',  0);
 
-    flush_rewrite_rules();
+    // NO se regeneran aquí los enlaces permanentes: en el hook de activación
+    // el `init` que declara la regla /tpv-webhook/ todavía no ha corrido, así
+    // que se regenerarían SIN ella y el endpoint daría 404 (comprobado en un
+    // WordPress real el 23-09-2026). Se deja una marca y se hace el flush en
+    // el primer `init`, cuando la regla ya está registrada.
+    update_option('tpv_sync_flush_rewrite', 1, false);
 });
 
 register_deactivation_hook(__FILE__, function () {
