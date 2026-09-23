@@ -634,16 +634,35 @@ class TPV_Sync_Product_Sync
      * @param int $limit máximo de productos a revisar (0 = todos los activos)
      * @return array stats con keys: checked, fixed, variant_fixed, skipped, errors
      */
-    public function reconcile(int $limit = 100): array
+    /**
+     * Repasa un tramo del catálogo y corrige lo que se haya desincronizado.
+     *
+     * $cursor dice por dónde continuar; el cursor devuelto en
+     * $stats['next_cursor'] es por dónde seguir la próxima vez (null = se
+     * llegó al final).
+     *
+     * Sin cursor esto revisaba SIEMPRE los primeros $limit productos. Con un
+     * catálogo de 2.499 (caso real) la pasada semanal miraba el 4%… y siempre
+     * el mismo 4%: un producto desincronizado en la posición 500 no se
+     * corregía nunca.
+     */
+    public function reconcile(int $limit = 100, ?string $cursor = null): array
     {
-        $stats = ['checked' => 0, 'fixed' => 0, 'variant_fixed' => 0, 'skipped' => 0, 'errors' => 0];
+        $stats = ['checked' => 0, 'fixed' => 0, 'variant_fixed' => 0, 'skipped' => 0,
+                  'errors' => 0, 'next_cursor' => null];
 
         $params = ['status' => 1];
         if ($limit > 0) $params['per_page'] = min($limit, 100);
+        if ($cursor !== null && $cursor !== '') { $params['cursor'] = $cursor; }
 
-        $products = $limit > 0
-            ? array_slice($this->api->getAll('/products', $params), 0, $limit)
-            : $this->api->getAll('/products', $params);
+        if ($limit > 0) {
+            // Una sola página desde el cursor, para poder continuar después.
+            $page = $this->api->get('/products', $params);
+            $products = array_slice((array) ($page['data'] ?? []), 0, $limit);
+            $stats['next_cursor'] = $page['meta']['cursor'] ?? null;
+        } else {
+            $products = $this->api->getAll('/products', $params);
+        }
 
         // Batch GETs de detalle en lotes de 50 para reducir RTTs.
         // En vez de 100 requests individuales (con token + auth cada una),

@@ -807,3 +807,156 @@ function run_webhook_version_tests(WooTestRunner $t): void
         }
     });
 }
+
+/**
+ * Una devolución del TPV no reponía el stock en la tienda. Y ni siquiera
+ * llegaba a intentarlo.
+ *
+ * Reproducido en un WordPress real el 23-09-2026:
+ *
+ *     stock inicial      10
+ *     vendes 2 uds        8
+ *     devolución          8   ← no repone
+ *
+ * DOS fallos encadenados:
+ *
+ * 1) handle_return() salía antes de hacer nada:
+ *
+ *        $total = (float)($fields['total'] ?? 0);
+ *        if ($total <= 0) return;
+ *
+ *    pero el evento `return.created` del TPV trae `order_id`, `product_id` y
+ *    `quantity` — NO trae `total` (ReturnController::logEvent). Así que toda
+ *    devolución hecha en caja se descartaba en silencio.
+ *
+ * 2) Aun pasando ese guard, `wc_create_refund()` se llamaba solo con el
+ *    importe. En WooCommerce `restock_items` es false por defecto y
+ *    `line_items` un array vacío: sin ellos NO hay reposición. Se devolvía el
+ *    dinero y el stock se quedaba perdido, acumulando error en cada
+ *    devolución.
+ *
+ * El arreglo usa lo que el evento SÍ trae: product_id + quantity, que permite
+ * reponer la cantidad exacta de la línea correcta en vez de adivinar por
+ * importe.
+ */
+function run_devolucion_stock_tests(WooTestRunner $t): void
+{
+    $t->suite('Una devolución del TPV repone el stock');
+
+    // class-webhook-handler.php engancha hooks de WP al cargarse: se aísla el
+    // método puro, que es donde vive la decisión.
+    if (!class_exists('DecisorDevolucion')) {
+        $src = (string) file_get_contents(dirname(__DIR__) . '/includes/class-webhook-handler.php');
+        preg_match('/public static function lineaADevolver.*?\n    \}/s', $src, $m);
+        eval('class DecisorDevolucion { ' . ($m[0] ?? 'public static function lineaADevolver($a,$b,$c){return null;}') . ' }');
+    }
+
+    // ── Lo que el evento trae de verdad ──────────────────────────────────
+    $t->test('el evento del TPV trae product_id y quantity, no total', function ($t) {
+        // Forma real de ReturnController::logEvent.
+        $evento = ['order_id' => 9001, 'product_id' => 42, 'quantity' => 2];
+        $t->assert(!isset($evento['total']),
+            'el guard exigía un total que el TPV nunca manda: toda devolución se descartaba');
+        $t->assert(isset($evento['product_id'], $evento['quantity']),
+            'lo que sí trae permite reponer la cantidad exacta');
+    });
+
+    // ── La decisión: qué línea se devuelve y cuánta cantidad ─────────────
+    $t->test('se identifica la línea por el producto del TPV', function ($t) {
+        // Líneas del pedido WC: [item_id => tpv_product_id]
+        $lineas = [11 => 42, 12 => 77];
+        $r = DecisorDevolucion::lineaADevolver($lineas, 42, 2.0);
+        $t->assert($r !== null, 'debe encontrar la línea');
+        $t->assert($r['item_id'] === 11, 'la línea del producto 42, no otra');
+        $t->assert($r['qty'] === 2.0, 'la cantidad que dice el evento');
+    });
+
+    $t->test('un producto que no está en el pedido no se inventa', function ($t) {
+        $t->assert(DecisorDevolucion::lineaADevolver([11 => 42], 99, 1.0) === null,
+            'devolver una línea que no existe corrompería el pedido');
+    });
+
+    $t->test('cantidad cero o negativa no genera devolución', function ($t) {
+        $t->assert(DecisorDevolucion::lineaADevolver([11 => 42], 42, 0.0) === null, 'cero');
+        $t->assert(DecisorDevolucion::lineaADevolver([11 => 42], 42, -3.0) === null, 'negativa');
+    });
+
+    // ── El contrato con WooCommerce ──────────────────────────────────────
+    $t->test('el refund pide reponer stock explícitamente', function ($t) {
+        // Los argumentos se arman en $args y se pasan a wc_create_refund();
+        // se comprueba el bloque de handle_return() entero.
+        $src = (string) file_get_contents(dirname(__DIR__) . '/includes/class-webhook-handler.php');
+        preg_match('/private function handle_return.*?\n    \}/s', $src, $m);
+        $cuerpo = $m[0] ?? '';
+        $t->assert(str_contains($cuerpo, "'restock_items' => true"),
+            'sin restock_items WooCommerce NO repone: es false por defecto');
+        $t->assert(str_contains($cuerpo, "'line_items'"),
+            'sin line_items no sabe QUÉ reponer');
+        $t->assert(str_contains($cuerpo, 'wc_create_refund($args)'),
+            'los argumentos armados son los que se mandan');
+    });
+
+    $t->test('sigue marcando el origen para no rebotar al TPV', function ($t) {
+        $src = (string) file_get_contents(dirname(__DIR__) . '/includes/class-webhook-handler.php');
+        $t->assert(str_contains($src, '_tpv_refund_origin'),
+            'sin la marca, on_wc_refund reenviaría la devolución al TPV: bucle');
+    });
+}
+
+/**
+ * La reconciliación semanal revisaba SIEMPRE los mismos 100 productos.
+ *
+ * Es la red de seguridad del sistema: la pasada que detecta y corrige lo que
+ * se haya desincronizado por un webhook perdido, un fallo de red o un error
+ * puntual. Pero corría así:
+ *
+ *     wp_schedule_event(..., 'weekly', 'tpv_sync_reconcile');
+ *     TPV_Sync::instance()->products->reconcile(100);
+ *
+ * y reconcile() coge los primeros N del listado, sin cursor ni memoria. Con
+ * 2.499 productos (caso real, pineapplemoda) eso revisa el 4% del catálogo…
+ * y SIEMPRE el mismo 4%. Un producto desincronizado en la posición 500 no se
+ * corregía jamás.
+ *
+ * El arreglo es recordar por dónde se iba y seguir desde ahí: en ~25 semanas
+ * se cubre el catálogo entero, y al terminar se vuelve a empezar.
+ */
+function run_reconciliacion_tests(WooTestRunner $t): void
+{
+    $t->suite('La reconciliación recorre TODO el catálogo');
+
+    $t->test('reconcile acepta desde dónde continuar', function ($t) {
+        $src = (string) file_get_contents(dirname(__DIR__) . '/includes/class-product-sync.php');
+        preg_match('/public function reconcile\(([^)]*)\)/', $src, $m);
+        $firma = $m[1] ?? '';
+        $t->assert(str_contains($firma, 'cursor'),
+            'sin cursor siempre revisa los mismos primeros N: el resto del catálogo nunca se mira');
+    });
+
+    $t->test('el cron guarda el punto y sigue desde ahí', function ($t) {
+        $src = (string) file_get_contents(dirname(__DIR__) . '/woocommerce-conector.php');
+        preg_match('/add_action\(\x27tpv_sync_reconcile\x27.*?\}\);/s', $src, $m);
+        $cron = $m[0] ?? '';
+        $t->assert(str_contains($cron, 'tpv_sync_reconcile_cursor'),
+            'sin guardar el cursor, cada semana vuelve a empezar por el principio');
+        // Y que se LEA para continuar: guardarlo sin usarlo no sirve de nada.
+        $t->assert((bool) preg_match('/get_option\(\s*\x27tpv_sync_reconcile_cursor\x27/', $cron),
+            'el cursor guardado tiene que leerse al arrancar la pasada');
+        $t->assert((bool) preg_match('/reconcile\(\s*\d+\s*,\s*\$cursor/', $cron),
+            'y pasarse a reconcile(): si no, se revisan siempre los primeros 100');
+    });
+
+    $t->test('al llegar al final vuelve a empezar', function ($t) {
+        $src = (string) file_get_contents(dirname(__DIR__) . '/woocommerce-conector.php');
+        preg_match('/add_action\(\x27tpv_sync_reconcile\x27.*?\}\);/s', $src, $m);
+        $cron = $m[0] ?? '';
+        $t->assert(str_contains($cron, 'delete_option'),
+            'al agotar el catálogo hay que reiniciar el recorrido, no quedarse parado');
+    });
+
+    // La aritmética del caso real, para que el número no se pierda.
+    $t->test('2499 productos a 100 por semana = 25 pasadas', function ($t) {
+        $semanas = (int) ceil(2499 / 100);
+        $t->assert($semanas === 25, "el catálogo entero se cubre en $semanas semanas, no nunca");
+    });
+}
