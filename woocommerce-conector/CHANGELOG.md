@@ -1,3 +1,10 @@
+## 2.4.3
+
+- **El conector rechazaba la version de aviso que el TPV manda** (error 426).
+  La firma ya se validaba bien, pero el siguiente control solo aceptaba la
+  version 1 y el TPV manda la 2. Comprobado que el formato nuevo trae todo
+  lo que el plugin necesita antes de aceptarlo.
+
 ## 2.4.2
 
 - **Las entregas del TPV seguian rechazandose con error 401.** El conector

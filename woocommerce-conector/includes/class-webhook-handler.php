@@ -25,8 +25,21 @@ class TPV_Sync_Webhook
      * envía X-Webhook-Version; si no coincide devolvemos 426 Upgrade Required.
      * Al bumpear la versión en el TPV, actualizar aquí tras validar que los
      * handlers soportan el nuevo shape.
+     *
+     * La '2' se añadió el 23-09-2026: el TPV llevaba tiempo mandándola
+     * (WebhookDispatcher::WEBHOOK_VERSION = '2') y aquí solo estaba la '1', así
+     * que TODAS las entregas morían en 426 — justo después de que la firma se
+     * validara bien.
+     *
+     * Validado antes de aceptarla, como pide el comentario de arriba: el
+     * payload v2 trae event_id, event_type, store_id, resource, resource_id,
+     * changed_fields, source, timestamp e idempotency_key; este plugin lee
+     * event_id, event_type, resource_id, changed_fields y timestamp. Todos
+     * presentes ⇒ el shape es compatible.
+     *
+     * La '1' se conserva: un TPV sin actualizar la sigue mandando.
      */
-    private const SUPPORTED_VERSIONS = ['1'];
+    private const SUPPORTED_VERSIONS = ['1', '2'];
 
     private TPV_Sync_Product_Sync $products;
     private TPV_Sync_Order_Sync   $orders;
