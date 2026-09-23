@@ -314,7 +314,17 @@ add_action('plugins_loaded', function () {
 
     if (!class_exists('WooCommerce')) return;
     TPV_Sync::instance();
-    (new TPV_Sync_Admin())->init();
+    $tpvAdmin = new TPV_Sync_Admin();
+    $tpvAdmin->init();
+
+    // Tras actualizar el plugin, comprobar que el webhook del TPV incluye los
+    // eventos de ESTA versión. Una tienda ya conectada se quedó con la lista
+    // con la que se dio de alta, y el TPV reparte con JSON_CONTAINS(events,?):
+    // sin esto, un evento nuevo no le llega nunca. Solo en el admin, una vez
+    // por versión, y sin romper nada si la API no responde.
+    if (is_admin()) {
+        add_action('admin_init', [$tpvAdmin, 'revisarSuscripcionWebhook']);
+    }
 });
 
 // ─── Cron: re-sync tras CSV import en TPV ────────────────────────────────────

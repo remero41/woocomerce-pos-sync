@@ -3237,6 +3237,101 @@ class TPV_Sync_Admin
      *      el TPV decidiese sobreescribir (versiones futuras). Tomamos el
      *      de la respuesta como fuente de verdad.
      */
+    /**
+     * Los eventos del TPV a los que se suscribe esta versión del plugin.
+     *
+     * Fuente ÚNICA: la usan tanto el alta del webhook como la revisión que se
+     * hace al actualizar. Si cada sitio armara su lista, una se quedaría atrás
+     * y el evento nuevo no llegaría nunca — que es justo lo que pasaba con
+     * `variant.stock_adjusted`.
+     *
+     * Los nombres tienen que existir en WebhookController::VALID_EVENTS de la
+     * API; uno inventado hace que la suscripción entera falle con 422.
+     */
+    public static function eventosSuscritos(bool $catalogo, bool $pedidos): array
+    {
+        return array_values(array_filter([
+            $catalogo ? 'product.created'  : null,
+            $catalogo ? 'product.updated'  : null,
+            $catalogo ? 'product.deleted'  : null,
+            $catalogo ? 'stock.adjusted'   : null,
+            // Stock de UNA variante. Sin él, vender la última talla M en caja
+            // no bajaba el stock online: el evento del padre no sirve porque
+            // en WC el padre de un variable no gestiona stock.
+            $catalogo ? 'variant.stock_adjusted' : null,
+            $catalogo ? 'special.created'  : null,
+            $catalogo ? 'special.deleted'  : null,
+            $catalogo ? 'variant.created'  : null,
+            $catalogo ? 'variants.updated' : null,
+            $catalogo ? 'csv.imported'     : null,
+            $pedidos  ? 'order.created'         : null,
+            $pedidos  ? 'order.payment_changed' : null,
+            $pedidos  ? 'return.created'        : null,
+            $pedidos  ? 'return.deleted'        : null,
+            'customer.created',
+            'customer.updated',
+            'customer.deleted',
+        ]));
+    }
+
+    /**
+     * ¿Al webhook del TPV le falta alguno de los eventos que pedimos?
+     *
+     * Solo mira lo que FALTA. Eventos de más no se tocan: pudo suscribirlos
+     * otra versión y recortarlos podría romper algo ajeno. Y sin diferencia
+     * no se hace PATCH: uno en cada carga del admin sería ruido contra la API
+     * de todas las tiendas.
+     */
+    public static function faltanEventos(array $enElTpv, array $queremos): bool
+    {
+        return array_diff($queremos, $enElTpv) !== [];
+    }
+
+    /**
+     * Tras actualizar el plugin, revisa que el webhook del TPV incluya los
+     * eventos de ESTA versión y lo corrige si falta alguno.
+     *
+     * Sin esto, una tienda ya conectada se queda con la lista con la que se
+     * dio de alta: el dispatcher del TPV reparte con JSON_CONTAINS(events,?),
+     * así que un evento nuevo no le llega jamás. La 2.2.0 arregla el stock
+     * por talla suscribiéndose a uno nuevo — publicarla sin esto sería sacar
+     * un arreglo que no se activa en ninguna tienda en funcionamiento.
+     *
+     * Se usa PATCH, no un alta nueva: recrear el webhook rotaría el secret y
+     * dejaría un huérfano en el TPV.
+     */
+    public function revisarSuscripcionWebhook(): void
+    {
+        $webhookId = (int) get_option('tpv_sync_webhook_id', 0);
+        if ($webhookId <= 0) return;   // sin conectar: no hay nada que revisar
+
+        $yaRevisada = (string) get_option('tpv_sync_webhook_eventos_version', '');
+        if ($yaRevisada === TPV_SYNC_VERSION) return;   // ya se hizo con esta versión
+
+        $queremos = self::eventosSuscritos(tpv_sync_module_catalog(), tpv_sync_module_orders());
+
+        try {
+            $api = new TPV_Sync_API_Client();
+            if (!$api->isConfigured()) return;
+
+            $actual = $api->get("/webhooks/$webhookId");
+            if (!TPV_Sync_API_Client::fueBien($actual)) return;   // se reintenta en la próxima carga
+
+            $enElTpv = (array) ($actual['data']['events'] ?? []);
+            if (!self::faltanEventos($enElTpv, $queremos)) {
+                update_option('tpv_sync_webhook_eventos_version', TPV_SYNC_VERSION, false);
+                return;
+            }
+
+            $r = $api->patch("/webhooks/$webhookId", ['events' => $queremos]);
+            if (TPV_Sync_API_Client::fueBien($r)) {
+                update_option('tpv_sync_webhook_eventos_version', TPV_SYNC_VERSION, false);
+            }
+        } catch (Throwable $e) {
+            // Nunca romper el admin por esto: se reintenta en la próxima carga.
+        }
+    }
+
     public function ajax_register_webhook(): void
     {
         check_ajax_referer('tpv_sync', 'nonce');
@@ -3266,29 +3361,7 @@ class TPV_Sync_Admin
                 // Eventos válidos según api/v1/controllers/WebhookController.php::VALID_EVENTS.
                 // No usar `order.status_changed` (la API no lo emite — usa
                 // `order.payment_changed` para cambios de método de pago).
-                'events' => array_values(array_filter([
-                    tpv_sync_module_catalog() ? 'product.created'  : null,
-                    tpv_sync_module_catalog() ? 'product.updated'  : null,
-                    tpv_sync_module_catalog() ? 'product.deleted'  : null,
-                    tpv_sync_module_catalog() ? 'stock.adjusted'   : null,
-                    // Stock de UNA variante. Sin pedirlo, vender la última
-                    // talla M en caja no bajaba el stock online: el evento del
-                    // padre no sirve porque en WC el padre de un variable no
-                    // gestiona stock (lo gestiona cada variación).
-                    tpv_sync_module_catalog() ? 'variant.stock_adjusted' : null,
-                    tpv_sync_module_catalog() ? 'special.created'  : null,
-                    tpv_sync_module_catalog() ? 'special.deleted'  : null,
-                    tpv_sync_module_catalog() ? 'variant.created'  : null,
-                    tpv_sync_module_catalog() ? 'variants.updated' : null,
-                    tpv_sync_module_catalog() ? 'csv.imported'     : null,
-                    tpv_sync_module_orders()  ? 'order.created'         : null,
-                    tpv_sync_module_orders()  ? 'order.payment_changed' : null,
-                    tpv_sync_module_orders()  ? 'return.created'        : null,
-                    tpv_sync_module_orders()  ? 'return.deleted'        : null,
-                    'customer.created',
-                    'customer.updated',
-                    'customer.deleted',
-                ])),
+                'events' => self::eventosSuscritos(tpv_sync_module_catalog(), tpv_sync_module_orders()),
             ]);
 
             if (!empty($result['data']['webhook_id'])) {
