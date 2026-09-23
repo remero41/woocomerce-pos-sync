@@ -4,7 +4,7 @@ declare(strict_types=1);
  * Plugin Name: Catinfog Conector
  * Plugin URI:  https://catinfog.com
  * Description: Conecta tu tienda WooCommerce con el TPV Catinfog. Sincroniza productos, stock, ventas y devoluciones en tiempo real.
- * Version:     2.3.0
+ * Version:     2.4.0
  * Author:      Catinfog
  * Text Domain: tpv-sync
  * Domain Path: /languages
@@ -12,7 +12,7 @@ declare(strict_types=1);
  */
 defined('ABSPATH') || exit;
 
-define('TPV_SYNC_VERSION', '2.3.0');
+define('TPV_SYNC_VERSION', '2.4.0');
 define('TPV_SYNC_DIR',     plugin_dir_path(__FILE__));
 define('TPV_SYNC_URL',     plugin_dir_url(__FILE__));
 

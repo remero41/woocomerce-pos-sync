@@ -590,3 +590,94 @@ function run_endpoint_webhook_tests(WooTestRunner $t): void
             'y al TPV se le da esa misma URL: si divergen, entrega en el vacío');
     });
 }
+
+/**
+ * El conector RECHAZABA todas las entregas del TPV: firmas incompatibles.
+ *
+ * Medido en producción el 23-09-2026, con el webhook ya creado: la cola del
+ * TPV mostraba 3 intentos reales, TODOS con `HTTP 401`. La puerta ya estaba
+ * abierta (antes daba 404), pero el conector rechazaba la firma.
+ *
+ * Los dos lados firmaban distinto, y de dos maneras a la vez:
+ *
+ *   TPV      (WebhookDispatcher::signPayload)
+ *            hash_hmac('sha256', $ts . '.' . $body, $secret)
+ *            cabecera:  t=<ts>,v1=<mac>          <- formato v2, estilo Stripe
+ *
+ *   Conector (verify_signature)
+ *            hash_hmac('sha256', $ts . "\n" . $body, $secret)
+ *            esperaba:  sha256=<mac>
+ *
+ * Separador distinto ('.' vs "\n") Y prefijo distinto. Nunca podían casar:
+ * comprobado calculando ambas con el mismo cuerpo, secreto y timestamp.
+ *
+ * Se arregla en el CONECTOR, no en la API: el formato del TPV es el
+ * documentado (WEBHOOK_VERSION = '2') y ya tiene otros clientes. Se conserva
+ * la aceptación del formato legacy para no romper TPVs sin actualizar.
+ */
+function run_firma_webhook_tests(WooTestRunner $t): void
+{
+    $t->suite('La firma del TPV se valida (entregas que daban 401)');
+
+    // class-webhook-handler.php engancha hooks de WP al cargarse; aquí solo
+    // interesa la decisión pura, así que se aísla el método.
+    if (!class_exists('VerificadorFirma')) {
+        $src = (string) file_get_contents(dirname(__DIR__) . '/includes/class-webhook-handler.php');
+        preg_match('/public static function verify_signature.*?\n    \}/s', $src, $m);
+        eval('class VerificadorFirma { ' . $m[0] . ' }');
+    }
+
+    $secret = 'un-secreto-de-prueba-de-64-chars-suficientemente-largo-aaaaaaaa';
+    $body   = '{"event_type":"variant.stock_adjusted","resource_id":3985}';
+    $ts     = 1758640000;
+
+    // Firma EXACTAMENTE como la emite el TPV (WebhookDispatcher::signPayload).
+    $firmaTpv = static fn(string $b, string $s, int $t): string =>
+        't=' . $t . ',v1=' . hash_hmac('sha256', $t . '.' . $b, $s);
+
+    $t->test('la firma v2 del TPV se acepta', function ($t) use ($secret, $body, $ts, $firmaTpv) {
+        $ok = VerificadorFirma::verify_signature($body, $firmaTpv($body, $secret, $ts), $secret, $ts);
+        $t->assert($ok === true,
+            'era el 401: el conector no reconocía el formato t=<ts>,v1=<mac>');
+    });
+
+    $t->test('un cuerpo manipulado NO se acepta', function ($t) use ($secret, $body, $ts, $firmaTpv) {
+        $firma = $firmaTpv($body, $secret, $ts);
+        $t->assert(VerificadorFirma::verify_signature($body . 'x', $firma, $secret, $ts) === false,
+            'si el cuerpo cambia, la firma no vale: es el sentido de firmar');
+    });
+
+    $t->test('otro secreto NO se acepta', function ($t) use ($secret, $body, $ts, $firmaTpv) {
+        $firma = $firmaTpv($body, $secret, $ts);
+        $t->assert(VerificadorFirma::verify_signature($body, $firma, 'otro-secreto', $ts) === false,
+            'un tercero no puede inyectar eventos en la tienda');
+    });
+
+    $t->test('un timestamp distinto del firmado NO se acepta', function ($t) use ($secret, $body, $ts, $firmaTpv) {
+        $firma = $firmaTpv($body, $secret, $ts);
+        $t->assert(VerificadorFirma::verify_signature($body, $firma, $secret, $ts + 1) === false,
+            'el ts va dentro del material firmado: es lo que impide reenviar una entrega vieja');
+    });
+
+    // El formato legacy sigue valiendo: un TPV sin actualizar debe seguir
+    // entregando mientras se despliega la flota.
+    $t->test('el formato legacy sha256= se sigue aceptando', function ($t) use ($secret, $body) {
+        $legacy = 'sha256=' . hash_hmac('sha256', $body, $secret);
+        $t->assert(VerificadorFirma::verify_signature($body, $legacy, $secret, 0) === true,
+            'no se rompe a los TPV que aún no se han actualizado');
+    });
+
+    $t->test('sin firma o sin secreto se rechaza', function ($t) use ($secret, $body, $ts) {
+        $t->assert(VerificadorFirma::verify_signature($body, '', $secret, $ts) === false, 'sin firma, no');
+        $t->assert(VerificadorFirma::verify_signature($body, 'x', '', $ts) === false, 'sin secreto, no');
+    });
+
+    // La premisa: las dos formas ERAN incompatibles. Si esto dejara de ser
+    // cierto, el bug no habría existido.
+    $t->test('las dos formas de firmar eran distintas (la premisa del bug)', function ($t) use ($secret, $body, $ts) {
+        $delTpv   = hash_hmac('sha256', $ts . '.'  . $body, $secret);
+        $delViejo = hash_hmac('sha256', $ts . "\n" . $body, $secret);
+        $t->assert($delTpv !== $delViejo,
+            'si coincidieran, el 401 tendría otra causa');
+    });
+}
