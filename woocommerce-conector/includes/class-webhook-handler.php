@@ -287,7 +287,10 @@ class TPV_Sync_Webhook
         // ±5 min. Sin esto, un payload+firma capturado del wire (TLS roto, MITM
         // en proxy interno, log filtrado) se podría replicar indefinidamente
         // tras la purga de la tabla idempotency (48h por defecto).
-        $ts = (int) ($_SERVER['HTTP_X_WEBHOOK_TIMESTAMP'] ?? 0);
+        $ts = self::timestamp_de_peticion(
+            (int) ($_SERVER['HTTP_X_WEBHOOK_TIMESTAMP'] ?? 0),
+            (string) $signature
+        );
         $now = time();
         if ($ts <= 0 || abs($now - $ts) > 300) {
             // Periodo de gracia: si el TPV todavía no envía timestamp (compat),
@@ -678,6 +681,36 @@ class TPV_Sync_Webhook
      * instanciar la clase (que requiere WC cargado). Se usa también
      * internamente desde handle().
      */
+    /**
+     * El timestamp de la petición, venga por donde venga.
+     *
+     * El TPV manda SOLO tres cabeceras (WebhookDispatcher::sendHttp):
+     * Content-Type, X-Webhook-Signature y X-Webhook-Version. NO manda
+     * X-Webhook-Timestamp: el timestamp viaja DENTRO de la firma, en el `t=`
+     * del formato v2 (`t=<ts>,v1=<mac>`) — que es precisamente lo que la hace
+     * anti-replay, porque el ts está firmado.
+     *
+     * El guard de handle() solo miraba la cabecera, así que rechazaba con
+     * "Stale or missing timestamp" un timestamp que sí venía, solo que en otro
+     * sitio: TODAS las entregas morían en 401 (medido en producción el
+     * 23-09-2026).
+     *
+     * La cabecera se sigue aceptando y tiene prioridad: otros emisores, o
+     * versiones futuras del TPV, podrían mandarla.
+     */
+    public static function timestamp_de_peticion(int $deCabecera, string $signature): int
+    {
+        if ($deCabecera > 0) { return $deCabecera; }
+        if (!str_starts_with($signature, 't=')) { return 0; }
+        foreach (explode(',', $signature) as $parte) {
+            $kv = explode('=', trim($parte), 2);
+            if (count($kv) === 2 && $kv[0] === 't' && ctype_digit($kv[1])) {
+                return (int) $kv[1];
+            }
+        }
+        return 0;
+    }
+
     public static function verify_signature(string $payload, string $signature, string $secret, int $timestamp = 0): bool
     {
         if ($secret === '' || $signature === '') return false;
