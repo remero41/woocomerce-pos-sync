@@ -133,5 +133,6 @@ run_resuscripcion_tests($t);
 run_lista_unica_tests($t);
 run_endpoint_webhook_tests($t);
 run_firma_webhook_tests($t);
+run_cache_actualizador_tests($t);
 
 exit($t->summary());

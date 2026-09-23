@@ -1,3 +1,11 @@
+## 2.4.1
+
+- **El aviso de actualizacion tardaba hasta 12 horas en aparecer.** El
+  plugin guardaba la respuesta de GitHub medio dia y no volvia a
+  preguntar, ni pulsando «Comprobar de nuevo» (ese boton limpia la cache
+  de WordPress, no la del plugin). Ahora se guarda una hora y el boton
+  tambien la limpia.
+
 ## 2.4.0
 
 ### Las entregas del TPV ya se aceptan
