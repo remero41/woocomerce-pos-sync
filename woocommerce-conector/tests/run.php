@@ -135,5 +135,6 @@ run_endpoint_webhook_tests($t);
 run_firma_webhook_tests($t);
 run_cache_actualizador_tests($t);
 run_timestamp_webhook_tests($t);
+run_webhook_version_tests($t);
 
 exit($t->summary());

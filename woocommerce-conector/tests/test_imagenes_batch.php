@@ -753,3 +753,57 @@ function run_timestamp_webhook_tests(WooTestRunner $t): void
             '…y el guard de ±5 min lo rechazará: el anti-replay no se relaja');
     });
 }
+
+/**
+ * El conector rechazaba la versión de payload que el TPV manda (HTTP 426).
+ *
+ * Medido en producción el 23-09-2026, tras arreglar el timestamp: las
+ * entregas dejaron de dar 401 y pasaron a dar 426 "Unsupported webhook
+ * version". Es decir: la firma YA se validaba correctamente y el siguiente
+ * guard las tumbaba.
+ *
+ *     conector:  SUPPORTED_VERSIONS = ['1']
+ *     TPV:       X-Webhook-Version: 2   (WebhookDispatcher::WEBHOOK_VERSION)
+ *
+ * El guard existe por una razón buena —no procesar a ciegas un shape que
+ * cambió— pero nadie actualizó la lista al pasar el TPV a la v2.
+ *
+ * Verificado antes de aceptarla: el payload v2 trae event_id, event_type,
+ * store_id, resource, resource_id, changed_fields, source, timestamp e
+ * idempotency_key, y el conector solo lee event_id, event_type, resource_id,
+ * changed_fields y timestamp. Todos presentes ⇒ compatible.
+ */
+function run_webhook_version_tests(WooTestRunner $t): void
+{
+    $t->suite('La versión de payload del TPV se acepta (426)');
+
+    $src = (string) file_get_contents(dirname(__DIR__) . '/includes/class-webhook-handler.php');
+    preg_match('/SUPPORTED_VERSIONS\s*=\s*\[(.*?)\]/s', $src, $m);
+    $lista = $m[1] ?? '';
+
+    $t->test('se acepta la v2, que es la que manda el TPV', function ($t) use ($lista) {
+        $t->assert(str_contains($lista, "'2'"),
+            'el TPV manda X-Webhook-Version: 2 y sin esto devuelve 426 en CADA entrega');
+    });
+
+    $t->test('y se sigue aceptando la v1', function ($t) use ($lista) {
+        $t->assert(str_contains($lista, "'1'"),
+            'un TPV sin actualizar sigue mandando la 1: no se le puede dejar tirado');
+    });
+
+    $t->test('una versión desconocida se sigue rechazando', function ($t) use ($lista) {
+        $t->assert(!str_contains($lista, "'3'") && !str_contains($lista, '*'),
+            'el guard tiene sentido: no procesar a ciegas un shape que no se conoce');
+    });
+
+    // El contrato de campos, que es lo que hace segura la v2.
+    $t->test('el payload v2 trae todo lo que el conector lee', function ($t) {
+        $delTpv    = ['version','event_id','event_type','store_id','resource',
+                      'resource_id','changed_fields','source','timestamp','idempotency_key'];
+        $queLeemos = ['event_id','event_type','resource_id','changed_fields','timestamp'];
+        foreach ($queLeemos as $campo) {
+            $t->assert(in_array($campo, $delTpv, true),
+                "el conector lee '$campo' y el payload v2 no lo trae: aceptar la v2 sería temerario");
+        }
+    });
+}
