@@ -681,9 +681,37 @@ class TPV_Sync_Webhook
     public static function verify_signature(string $payload, string $signature, string $secret, int $timestamp = 0): bool
     {
         if ($secret === '' || $signature === '') return false;
-        // Si llega timestamp, lo incluimos en el material firmado (anti-replay).
-        // Mantenemos compat con el formato legacy (firma solo del body) durante
-        // la migración. El TPV emite ambas firmas; el receptor acepta cualquiera.
+
+        // Formato v2 del TPV (WebhookDispatcher::signPayload), estilo Stripe:
+        //
+        //     cabecera:  t=<ts>,v1=<mac>
+        //     material:  <ts> . '.' . <body>
+        //
+        // Esto es lo que emite el TPV de verdad. El receptor esperaba
+        // `sha256=<mac>` con el timestamp separado por "\n", así que NINGUNA
+        // entrega podía validarse: en producción el 23-09-2026 la cola del TPV
+        // acumulaba intentos reales, todos con HTTP 401. Ni el prefijo ni el
+        // separador coincidían.
+        if (str_starts_with($signature, 't=')) {
+            $ts  = 0;
+            $mac = '';
+            foreach (explode(',', $signature) as $parte) {
+                $kv = explode('=', trim($parte), 2);
+                if (count($kv) !== 2) continue;
+                if ($kv[0] === 't')  { $ts  = (int) $kv[1]; }
+                if ($kv[0] === 'v1') { $mac = $kv[1]; }
+            }
+            if ($ts <= 0 || $mac === '') return false;
+            // El ts firmado manda sobre el que venga por otra vía: es lo que
+            // impide reenviar una entrega vieja con su firma buena.
+            $esperado = hash_hmac('sha256', $ts . '.' . $payload, $secret);
+            if (!hash_equals($esperado, $mac)) return false;
+            // Si el caller nos dio un timestamp, tiene que ser ESE.
+            return $timestamp === 0 || $timestamp === $ts;
+        }
+
+        // Formatos legacy, para no romper TPVs sin actualizar mientras se
+        // despliega la flota.
         if ($timestamp > 0) {
             $expectedTs = 'sha256=' . hash_hmac('sha256', $timestamp . "\n" . $payload, $secret);
             if (hash_equals($expectedTs, $signature)) return true;

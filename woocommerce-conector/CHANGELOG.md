@@ -1,3 +1,14 @@
+## 2.4.0
+
+### Las entregas del TPV ya se aceptan
+
+- **El conector rechazaba TODOS los avisos del TPV con un error de firma.**
+  Los dos lados firmaban de forma incompatible: el TPV usa el formato v2
+  (`t=<ts>,v1=<mac>`) y el conector esperaba `sha256=<mac>`, ademas con un
+  separador distinto. Medido en produccion: el TPV entregaba de verdad y la
+  tienda devolvia 401 en cada intento. Ahora se acepta el formato v2, y
+  tambien el antiguo para no romper TPVs sin actualizar.
+
 ## 2.3.0
 
 ### La sincronizacion TPV -> tienda ya se puede activar

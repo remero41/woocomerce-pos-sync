@@ -28,6 +28,8 @@ if (!function_exists('update_option')) {
 if (!function_exists('delete_transient')) { function delete_transient($k) { return true; } }
 if (!function_exists('get_transient'))    { function get_transient($k) { return false; } }
 if (!function_exists('set_transient'))    { function set_transient($k, $v, $t = 0) { return true; } }
+if (!function_exists('add_action'))      { function add_action($t, $f, $p = 10, $a = 1) { return true; } }
+if (!function_exists('add_filter'))      { function add_filter($t, $f, $p = 10, $a = 1) { return true; } }
 if (!function_exists('apply_filters'))    { function apply_filters($tag, $value, ...$a) { return $value; } }
 if (!function_exists('__'))               { function __($t, $d = null) { return $t; } }
 
@@ -130,5 +132,6 @@ run_variantes_stock_tests($t);
 run_resuscripcion_tests($t);
 run_lista_unica_tests($t);
 run_endpoint_webhook_tests($t);
+run_firma_webhook_tests($t);
 
 exit($t->summary());
