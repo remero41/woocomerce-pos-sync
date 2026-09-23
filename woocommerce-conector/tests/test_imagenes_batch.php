@@ -485,3 +485,38 @@ function run_resuscripcion_tests(WooTestRunner $t): void
             'solo importa que no FALTE ninguno de los que pedimos');
     });
 }
+
+/**
+ * La lista de eventos estaba DUPLICADA.
+ *
+ * `eventosSuscritos()` se creó como fuente única… y quedó una segunda copia
+ * en `class-api-client.php::reRegisterWebhookSilently()`, que es la que corre
+ * cuando el webhook se re-registra solo tras un fallo de firma. Esa copia NO
+ * tenía `variant.stock_adjusted`: si esa vía se disparaba, la tienda perdía
+ * el evento de stock por talla sin que nadie se enterara.
+ *
+ * Es exactamente el fallo que la centralización venía a evitar: dos listas,
+ * una se queda atrás.
+ */
+function run_lista_unica_tests(WooTestRunner $t): void
+{
+    $t->suite('Los eventos se declaran en UN solo sitio');
+
+    $t->test('el cliente API no arma su propia lista de eventos', function ($t) {
+        $src = (string) file_get_contents(dirname(__DIR__) . '/includes/class-api-client.php');
+        // Una segunda lista se reconoce por repetir los nombres de evento.
+        $t->assert(!str_contains($src, "'product.created'"),
+            'class-api-client.php vuelve a tener su propia lista: se quedará atrás en el próximo evento nuevo');
+    });
+
+    $t->test('y usa la fuente única', function ($t) {
+        $src = (string) file_get_contents(dirname(__DIR__) . '/includes/class-api-client.php');
+        $t->assert(str_contains($src, 'eventosSuscritos'),
+            'debe pedir la lista a TPV_Sync_Admin::eventosSuscritos()');
+    });
+
+    $t->test('esa fuente incluye el evento de stock por variante', function ($t) {
+        $t->assert(in_array('variant.stock_adjusted', TPV_Sync_Admin::eventosSuscritos(true, true), true),
+            'si falta aquí, falta en los dos caminos a la vez');
+    });
+}

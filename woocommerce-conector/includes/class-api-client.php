@@ -251,26 +251,14 @@ class TPV_Sync_API_Client
     private function reRegisterWebhookSilently(): bool
     {
         $newSecret = bin2hex(random_bytes(32));
-        $events = array_values(array_filter([
-            tpv_sync_module_catalog() ? 'product.created'  : null,
-            tpv_sync_module_catalog() ? 'product.updated'  : null,
-            tpv_sync_module_catalog() ? 'product.deleted'  : null,
-            tpv_sync_module_catalog() ? 'stock.adjusted'   : null,
-            tpv_sync_module_catalog() ? 'special.created'  : null,
-            tpv_sync_module_catalog() ? 'special.deleted'  : null,
-            tpv_sync_module_catalog() ? 'variant.created'  : null,
-            tpv_sync_module_catalog() ? 'variants.updated' : null,
-            tpv_sync_module_catalog() ? 'csv.imported'     : null,
-            tpv_sync_module_orders()  ? 'order.created'         : null,
-            tpv_sync_module_orders()  ? 'order.payment_changed' : null,
-            tpv_sync_module_orders()  ? 'return.created'        : null,
-            tpv_sync_module_orders()  ? 'return.deleted'        : null,
-            // Clientes: siempre suscritos (no hay módulo separado, los
-            // clientes son transversales y la mayoría de tiendas los quieren).
-            'customer.created',
-            'customer.updated',
-            'customer.deleted',
-        ]));
+        // La lista vive en UN solo sitio (TPV_Sync_Admin::eventosSuscritos).
+        // Aquí había una copia que se quedó sin `variant.stock_adjusted`: si
+        // esta vía se disparaba, la tienda perdía el aviso de stock por talla
+        // sin que nadie se enterara. Dos listas = una se queda atrás.
+        $events = class_exists('TPV_Sync_Admin')
+            ? TPV_Sync_Admin::eventosSuscritos(tpv_sync_module_catalog(), tpv_sync_module_orders())
+            : [];
+        if ($events === []) { return false; }
         $r = $this->post('/webhooks', [
             'url'    => home_url('/tpv-webhook/'),
             'secret' => $newSecret,
