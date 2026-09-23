@@ -1,3 +1,22 @@
+## 2.5.0
+
+### Las devoluciones del TPV reponen el stock
+
+- **Una devolucion hecha en caja no devolvia el stock a la tienda, y ni
+  siquiera lo intentaba.** El aviso del TPV se descartaba en silencio
+  porque el codigo esperaba un importe que ese aviso no trae; y aunque
+  hubiera pasado, el reembolso se creaba sin pedir la reposicion, que en
+  WooCommerce esta desactivada por defecto. Resultado: se devolvia el
+  dinero y el stock se quedaba perdido, acumulando error con cada
+  devolucion. Ahora se repone la cantidad exacta de la linea devuelta.
+
+### La revision periodica recorre todo el catalogo
+
+- **La reconciliacion semanal revisaba siempre los mismos 100 productos.**
+  Con un catalogo de 2.499 eso es el 4%, y siempre el mismo: un producto
+  desincronizado mas alla de esa primera pagina no se corregia nunca.
+  Ahora continua por donde se quedo y cubre el catalogo entero.
+
 ## 2.4.3
 
 - **El conector rechazaba la version de aviso que el TPV manda** (error 426).

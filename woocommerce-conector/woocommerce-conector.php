@@ -4,7 +4,7 @@ declare(strict_types=1);
  * Plugin Name: Catinfog Conector
  * Plugin URI:  https://catinfog.com
  * Description: Conecta tu tienda WooCommerce con el TPV Catinfog. Sincroniza productos, stock, ventas y devoluciones en tiempo real.
- * Version:     2.4.3
+ * Version:     2.5.0
  * Author:      Catinfog
  * Text Domain: tpv-sync
  * Domain Path: /languages
@@ -12,7 +12,7 @@ declare(strict_types=1);
  */
 defined('ABSPATH') || exit;
 
-define('TPV_SYNC_VERSION', '2.4.3');
+define('TPV_SYNC_VERSION', '2.5.0');
 define('TPV_SYNC_DIR',     plugin_dir_path(__FILE__));
 define('TPV_SYNC_URL',     plugin_dir_url(__FILE__));
 
@@ -199,7 +199,24 @@ class TPV_Sync
 
 add_action('tpv_sync_reconcile', function () {
     if (!class_exists('TPV_Sync')) return;
-    TPV_Sync::instance()->products->reconcile(100);
+
+    // Continuamos por donde se quedó la pasada anterior. Sin esto se revisaban
+    // SIEMPRE los primeros 100 productos: con un catálogo de 2.499 eso es el
+    // 4%, y siempre el mismo 4%. Un producto desincronizado más allá de esa
+    // primera página no se corregía nunca.
+    //
+    // Con cursor, en ~25 semanas se cubre el catálogo entero y se vuelve a
+    // empezar. La reconciliación es la red de seguridad del sistema: tiene que
+    // pasar por todas partes, aunque tarde.
+    $cursor = get_option('tpv_sync_reconcile_cursor', '') ?: null;
+    $stats  = TPV_Sync::instance()->products->reconcile(100, $cursor);
+
+    if (!empty($stats['next_cursor'])) {
+        update_option('tpv_sync_reconcile_cursor', (string) $stats['next_cursor'], false);
+    } else {
+        // Se llegó al final del catálogo: la próxima pasada empieza de nuevo.
+        delete_option('tpv_sync_reconcile_cursor');
+    }
 });
 
 // ─── Cron de fallback queue: procesa pending cada minuto ─────────────────────

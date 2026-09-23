@@ -607,6 +607,27 @@ class TPV_Sync_Webhook
         }
     }
 
+    /**
+     * Qué línea del pedido WC corresponde al producto devuelto, y cuánta
+     * cantidad. Decisión pura: sin WooCommerce, para poder fijarla con tests.
+     *
+     * $lineas es [item_id => tpv_product_id] del pedido.
+     *
+     * Devuelve null si el producto no está en ese pedido o la cantidad no es
+     * positiva: devolver una línea inexistente corrompería el pedido, y una
+     * cantidad cero o negativa no es una devolución.
+     */
+    public static function lineaADevolver(array $lineas, int $tpvProductId, float $qty): ?array
+    {
+        if ($tpvProductId <= 0 || $qty <= 0) { return null; }
+        foreach ($lineas as $itemId => $pid) {
+            if ((int) $pid === $tpvProductId) {
+                return ['item_id' => (int) $itemId, 'qty' => $qty];
+            }
+        }
+        return null;
+    }
+
     private function handle_return(array $fields): void
     {
         // Buscar el pedido WC que corresponde al order_id del TPV
@@ -625,21 +646,76 @@ class TPV_Sync_Webhook
         $order = wc_get_order((int)$wcOrderId);
         if (!$order) return;
 
-        $total = (float)($fields['total'] ?? 0);
-        if ($total <= 0) return;
+        // El evento `return.created` del TPV trae order_id, product_id y
+        // quantity (ReturnController::logEvent). NO trae `total`: el guard
+        // anterior exigía uno y descartaba en silencio TODA devolución hecha
+        // en caja.
+        $tpvProductId = (int) ($fields['product_id'] ?? 0);
+        $qty          = (float) ($fields['quantity'] ?? 0);
 
-        // Crear reembolso en WC marcando el origen para que on_wc_refund no
-        // lo reenvíe al TPV (evita bucle).
-        $refund = wc_create_refund([
-            'amount'   => $total,
-            'reason'   => 'Devolución procesada en TPV',
-            'order_id' => (int)$wcOrderId,
-        ]);
+        // Mapa [item_id => tpv_product_id] de las líneas del pedido.
+        $lineas = [];
+        foreach ($order->get_items() as $itemId => $item) {
+            $pid = (int) get_post_meta($item->get_product_id(), TPV_Sync_Product_Sync::TPV_ID_META, true);
+            if ($pid > 0) { $lineas[(int) $itemId] = $pid; }
+        }
+
+        $linea = self::lineaADevolver($lineas, $tpvProductId, $qty);
+
+        $args = [
+            'reason'        => 'Devolución procesada en TPV',
+            'order_id'      => (int) $wcOrderId,
+            // restock_items es FALSE por defecto en WooCommerce: sin esto se
+            // devolvía el dinero y el stock se quedaba perdido, acumulando
+            // error en cada devolución (reproducido: 10 → vendes 2 → 8 →
+            // devuelves → 8).
+            'restock_items' => true,
+        ];
+
+        if ($linea !== null) {
+            $item      = $order->get_item($linea['item_id']);
+            $unitario  = $item && $item->get_quantity() > 0
+                ? ((float) $item->get_total() + (float) $item->get_total_tax()) / (float) $item->get_quantity()
+                : 0.0;
+            $importe   = round($unitario * $linea['qty'], 2);
+
+            // Con line_items WooCommerce sabe QUÉ reponer y cuánto: la
+            // cantidad exacta de la línea correcta, en vez de adivinar por
+            // importe.
+            $args['amount']     = $importe;
+            $args['line_items'] = [
+                $linea['item_id'] => [
+                    'qty'          => $linea['qty'],
+                    'refund_total' => $importe,
+                ],
+            ];
+        } else {
+            // El producto no está en ese pedido, o la cantidad no es positiva.
+            // Se registra el reembolso por el importe que venga (compat con
+            // emisores que sí manden `total`) pero sin tocar stock: reponer a
+            // ciegas sería peor que no reponer.
+            $importe = (float) ($fields['total'] ?? 0);
+            if ($importe <= 0) {
+                $this->log('return.created', (int) $wcOrderId,
+                    "Devolución sin línea identificable (product_id=$tpvProductId qty=$qty)", 'warn');
+                return;
+            }
+            $args['amount']        = $importe;
+            $args['restock_items'] = false;
+        }
+
+        // Marcamos el origen para que on_wc_refund no lo reenvíe al TPV
+        // (evita bucle).
+        $refund = wc_create_refund($args);
         if (!is_wp_error($refund) && $refund) {
             update_post_meta($refund->get_id(), '_tpv_refund_origin', 'tpv');
         }
 
-        $order->add_order_note("Devolución de {$total}€ registrada desde el TPV.");
+        $order->add_order_note(sprintf(
+            'Devolución de %s€ registrada desde el TPV%s.',
+            $args['amount'],
+            $linea !== null ? sprintf(' (%s uds repuestas al stock)', $linea['qty']) : ''
+        ));
     }
 
     /**
