@@ -681,3 +681,75 @@ function run_firma_webhook_tests(WooTestRunner $t): void
             'si coincidieran, el 401 tendría otra causa');
     });
 }
+
+/**
+ * El conector exigía una cabecera que el TPV no manda.
+ *
+ * Medido en producción el 23-09-2026: con el webhook creado, el endpoint
+ * abierto y la firma v2 ya soportada, TODAS las entregas seguían en HTTP 401.
+ *
+ * handle() hace este guard ANTES de verificar la firma:
+ *
+ *     $ts = (int) ($_SERVER['HTTP_X_WEBHOOK_TIMESTAMP'] ?? 0);
+ *     if ($ts <= 0 || abs(time() - $ts) > 300) { 401 "Stale or missing timestamp" }
+ *
+ * Pero el TPV manda SOLO tres cabeceras (WebhookDispatcher::sendHttp):
+ * Content-Type, X-Webhook-Signature y X-Webhook-Version. No hay
+ * X-Webhook-Timestamp: el timestamp viaja DENTRO de la firma, en el `t=` del
+ * formato v2 (`t=<ts>,v1=<mac>`), que es justo lo que lo hace anti-replay.
+ *
+ * Así que el guard rechazaba por "falta el timestamp" un timestamp que sí
+ * estaba, solo que en otro sitio. La intención del guard es correcta y se
+ * conserva: lo que cambia es de dónde se lee.
+ */
+function run_timestamp_webhook_tests(WooTestRunner $t): void
+{
+    $t->suite('El timestamp se lee de la firma (401 "Stale or missing")');
+
+    if (!class_exists('LectorTs')) {
+        $src = (string) file_get_contents(dirname(__DIR__) . '/includes/class-webhook-handler.php');
+        preg_match('/public static function timestamp_de_peticion.*?\n    \}/s', $src, $m);
+        eval('class LectorTs { ' . ($m[0] ?? 'public static function timestamp_de_peticion($c,$f){return 0;}') . ' }');
+    }
+
+    $ahora = time();
+
+    $t->test('el ts sale del t= de la firma cuando no hay cabecera', function ($t) use ($ahora) {
+        $firma = 't=' . $ahora . ',v1=' . str_repeat('a', 64);
+        $t->assert(LectorTs::timestamp_de_peticion(0, $firma) === $ahora,
+            'el TPV manda el timestamp DENTRO de la firma, no en una cabecera aparte');
+    });
+
+    $t->test('si viene la cabecera, se respeta', function ($t) use ($ahora) {
+        // Otros emisores (o versiones futuras) sí podrían mandarla.
+        $t->assert(LectorTs::timestamp_de_peticion($ahora, '') === $ahora,
+            'la cabecera sigue valiendo si está');
+    });
+
+    $t->test('la cabecera manda sobre la firma si vienen las dos', function ($t) use ($ahora) {
+        $firma = 't=' . ($ahora - 100) . ',v1=x';
+        $t->assert(LectorTs::timestamp_de_peticion($ahora, $firma) === $ahora,
+            'con cabecera explícita, esa es la que cuenta');
+    });
+
+    $t->test('sin cabecera y sin t= en la firma, no hay timestamp', function ($t) {
+        $t->assert(LectorTs::timestamp_de_peticion(0, 'sha256=abc') === 0,
+            'una firma legacy no lleva timestamp: el guard debe seguir rechazando');
+        $t->assert(LectorTs::timestamp_de_peticion(0, '') === 0, 'sin nada, cero');
+    });
+
+    $t->test('una firma con t= basura no cuela un timestamp falso', function ($t) {
+        $t->assert(LectorTs::timestamp_de_peticion(0, 't=,v1=x') === 0, 't vacío');
+        $t->assert(LectorTs::timestamp_de_peticion(0, 't=abc,v1=x') === 0, 't no numérico');
+        $t->assert(LectorTs::timestamp_de_peticion(0, 't=-5,v1=x') === 0, 't negativo');
+    });
+
+    // El anti-replay SIGUE en pie: esa es la razón de ser del guard.
+    $t->test('un timestamp viejo sigue quedando fuera de la ventana', function ($t) use ($ahora) {
+        $viejo = $ahora - 3600;
+        $leido = LectorTs::timestamp_de_peticion(0, 't=' . $viejo . ',v1=x');
+        $t->assert($leido === $viejo, 'se lee tal cual…');
+        $t->assert(abs($ahora - $leido) > 300,
+            '…y el guard de ±5 min lo rechazará: el anti-replay no se relaja');
+    });
+}

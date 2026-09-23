@@ -1,3 +1,11 @@
+## 2.4.2
+
+- **Las entregas del TPV seguian rechazandose con error 401.** El conector
+  exigia una cabecera `X-Webhook-Timestamp` que el TPV no manda: el
+  timestamp viaja DENTRO de la firma (`t=...`), que es justo lo que la hace
+  anti-replay. Ahora se lee de ahi. La proteccion anti-replay de +-5 minutos
+  no se relaja.
+
 ## 2.4.1
 
 - **El aviso de actualizacion tardaba hasta 12 horas en aparecer.** El
