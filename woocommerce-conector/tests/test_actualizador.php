@@ -134,3 +134,48 @@ function run_actualizador_tests(WooTestRunner $t): void
         }
     });
 }
+
+/**
+ * La caché de 12h dejaba la actualización invisible durante medio día.
+ *
+ * Visto el 23-09-2026: con la 2.2.0 instalada y la 2.4.0 ya publicada, el
+ * panel de Plugins no ofrecía nada. El plugin había preguntado a GitHub al
+ * instalarse, guardó la respuesta 12 horas y no volvía a preguntar — ni
+ * pulsando "Comprobar de nuevo" en Escritorio → Actualizaciones, porque ese
+ * botón limpia el transient de WordPress, no el nuestro.
+ *
+ * La caché existe por una razón buena (sin token GitHub da 60 peticiones por
+ * hora y por IP, y en hosting compartido varias tiendas comparten IP), pero
+ * 12h es demasiado y no había forma de forzarla desde la pantalla.
+ *
+ * Dos cambios:
+ *   - TTL a 1 hora: suficiente para el límite, razonable para el comerciante.
+ *   - Cuando el usuario pulsa "Comprobar de nuevo" (WordPress borra su propio
+ *     transient update_plugins), nosotros borramos también el nuestro.
+ */
+function run_cache_actualizador_tests(WooTestRunner $t): void
+{
+    $t->suite('Actualizador — la caché no esconde una versión nueva');
+
+    $t->test('la respuesta de GitHub no se cachea más de una hora', function ($t) {
+        $src = (string) file_get_contents(dirname(__DIR__) . '/includes/class-updater.php');
+        $t->assert(!preg_match('/CACHE_TTL\s*=\s*12\s*\*\s*HOUR_IN_SECONDS/', $src),
+            '12h dejaba la actualización invisible medio día');
+        $t->assert(preg_match('/CACHE_TTL\s*=\s*HOUR_IN_SECONDS/', $src) === 1,
+            'el TTL debe ser de una hora');
+    });
+
+    $t->test('"Comprobar de nuevo" también limpia nuestra caché', function ($t) {
+        $src = (string) file_get_contents(dirname(__DIR__) . '/includes/class-updater.php');
+        // WordPress dispara este hook al borrar su transient de actualizaciones.
+        $t->assert(str_contains($src, 'delete_site_transient_update_plugins'),
+            'sin esto, el botón de WordPress no sirve de nada para este plugin');
+    });
+
+    $t->test('y el borrado alcanza a la clave del plugin', function ($t) {
+        $src = (string) file_get_contents(dirname(__DIR__) . '/includes/class-updater.php');
+        // Debe haber al menos dos borrados: el de tras actualizar y el nuevo.
+        $t->assert(substr_count($src, 'delete_transient(self::CACHE_KEY)') >= 2,
+            'el hook nuevo tiene que borrar la misma clave que se guarda');
+    });
+}

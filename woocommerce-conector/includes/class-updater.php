@@ -28,10 +28,14 @@ class TPV_Sync_Updater
     /** Repo público donde se publican los releases. */
     public const REPO = 'remero41/woocomerce-pos-sync';
 
-    /** Cuánto se cachea la respuesta de GitHub. Sin token hay 60 peticiones
-     *  por hora y por IP: con un hosting compartido, varias tiendas comparten
-     *  IP y se agotarían solas. 12h es de sobra para un plugin. */
-    private const CACHE_TTL   = 12 * HOUR_IN_SECONDS;
+    /** Cuánto se cachea la respuesta de GitHub.
+     *
+     *  Hay caché porque sin token GitHub da 60 peticiones por hora y por IP, y
+     *  en hosting compartido varias tiendas comparten IP. Pero estaba en 12h y
+     *  eso dejaba una versión nueva INVISIBLE medio día (visto el 23-09-2026:
+     *  2.4.0 publicada y el panel sin ofrecer nada). Una hora protege igual el
+     *  límite y no hace esperar al comerciante. */
+    private const CACHE_TTL   = HOUR_IN_SECONDS;
     private const CACHE_KEY   = 'tpv_sync_ultimo_release';
     private const TIMEOUT     = 8;
 
@@ -52,6 +56,14 @@ class TPV_Sync_Updater
         add_action('upgrader_process_complete', static function ($upgrader, array $hook): void {
             if (($hook['type'] ?? '') === 'plugin') { delete_transient(self::CACHE_KEY); }
         }, 10, 2);
+
+        // Y cuando el usuario pulsa "Comprobar de nuevo" en Escritorio →
+        // Actualizaciones, WordPress borra SU transient y dispara este hook.
+        // Sin engancharse aquí, ese botón no servía de nada para este plugin:
+        // seguíamos contestando con la respuesta guardada.
+        add_action('delete_site_transient_update_plugins', static function (): void {
+            delete_transient(self::CACHE_KEY);
+        });
     }
 
     // ─── Enganches de WordPress ──────────────────────────────────────────
