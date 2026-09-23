@@ -1,3 +1,23 @@
+## 2.3.0
+
+### La sincronizacion TPV -> tienda ya se puede activar
+
+Tres fallos encadenados impedian que el TPV avisara a la tienda de nada.
+Tenian que caer los tres.
+
+- **El endpoint que RECIBE los avisos daba 404.** La ruta /tpv-webhook/ se
+  declara al arrancar, pero los enlaces permanentes se regeneraban en la
+  activacion, ANTES de que la regla existiera: se regeneraban sin ella. Y
+  al actualizar sobrescribiendo el ZIP, ese momento ni siquiera ocurre.
+  Ahora el refresco se hace cuando la regla ya esta puesta.
+
+- **Quedaba una segunda lista de eventos** sin el aviso de stock por talla,
+  usada al re-registrar el webhook tras un fallo de firma. Eliminada: la
+  lista vive en un solo sitio.
+
+- El tercero estaba en el TPV: crear el webhook devolvia siempre error.
+  **Requiere el TPV actualizado.**
+
 ## 2.2.0
 
 ### El stock por talla ya cruza en las dos direcciones
