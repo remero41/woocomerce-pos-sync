@@ -128,5 +128,6 @@ run_conteo_coherente_tests($t);
 run_actualizador_tests($t);
 run_variantes_stock_tests($t);
 run_resuscripcion_tests($t);
+run_lista_unica_tests($t);
 
 exit($t->summary());
