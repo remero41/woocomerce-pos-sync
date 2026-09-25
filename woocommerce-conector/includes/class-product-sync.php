@@ -651,6 +651,20 @@ class TPV_Sync_Product_Sync
         $stats = ['checked' => 0, 'fixed' => 0, 'variant_fixed' => 0, 'skipped' => 0,
                   'errors' => 0, 'next_cursor' => null];
 
+        // Esta pasada solo toca STOCK, y el dueño del stock es el TPV salvo
+        // que se diga lo contrario. Antes estaba cableado ("TPV gana
+        // siempre"), lo que impedía el modo auditoría: ahora se consulta la
+        // política aunque el resultado habitual sea el mismo.
+        $politica = TPV_Sync_Reconciler::politicaDesdePrincipal(
+            (string) get_option('tpv_sync_principal', '')
+        );
+        if ($politica['stock'] !== 'tpv') {
+            $this->log('reconcile_done', 0,
+                'reconcile de stock omitido: el stock no lo manda el TPV ('
+                . $politica['stock'] . ')');
+            return $stats;
+        }
+
         $params = ['status' => 1];
         if ($limit > 0) $params['per_page'] = min($limit, 100);
         if ($cursor !== null && $cursor !== '') { $params['cursor'] = $cursor; }
@@ -952,20 +966,28 @@ class TPV_Sync_Product_Sync
         if (!$product) return null;
         if ($product->is_type('variation')) return null;
 
-        $gtin = trim((string) get_post_meta($postId, '_global_unique_id', true));
-        $sku  = trim((string) $product->get_sku());
-        $fallback = '__WC__' . $postId;
-
-        if ($gtin !== '')   { $model = $gtin; }
-        elseif ($sku !== '') { $model = $sku; }
-        else                 { $model = $fallback; }
-
-        $skuForTpv = $sku !== '' ? $sku : $fallback;
+        // El mapeo vive en TPV_Sync_Identificadores (puro y con tests): el
+        // `model` siempre relleno porque el TPV lo exige, y el `sku` vacío
+        // cuando Woo no tiene, en vez de enseñar un valor inventado.
+        $ids = TPV_Sync_Identificadores::paraProducto(
+            (string) get_post_meta($postId, '_global_unique_id', true),
+            (string) $product->get_sku(),
+            $postId
+        );
+        $model     = $ids['model'];
+        $skuForTpv = $ids['sku'];
 
         // Mismo guard que push_wc_product_to_tpv: precio negativo no soportado.
         // En el bulk path, retornar null hace que el caller (push_wc_products_bulk)
         // cuente el item como "errors" — no hay otro side-effect.
         $rawPrice = (float) ($product->get_regular_price() ?: 0);
+        // Producto variable: el precio que viaja es el de la variante más
+        // barata, no el del padre (que en WC viene vacío = 0). Tiene que ser
+        // el MISMO desde el que se calculan los sobreprecios de las variantes
+        // en build_options_for_tpv, o el ticket no cuadra.
+        $baseVariable = $this->basePriceForVariableProduct($product);
+        if ($baseVariable !== null) $rawPrice = $baseVariable;
+
         if ($rawPrice < 0) {
             $this->log('skip', $postId,
                 "Producto con precio negativo (" . $rawPrice . " €) no soportado por el TPV. Skip en bulk push."
@@ -1225,24 +1247,16 @@ class TPV_Sync_Product_Sync
         // fallback "WC-<post_id>". NUNCA autogeneramos un slug del título y
         // lo grabamos en WC (hacerlo corrompía el catálogo del cliente al
         // sobrescribir SKUs reales que estaban vacíos por otros motivos).
-        $gtin = trim((string)get_post_meta($postId, '_global_unique_id', true));
-        $sku  = trim((string)$product->get_sku());
-
-        // Fallback técnico: prefijo inusual ("__WC__") para minimizar colisiones
-        // con SKUs escritos a mano. Si aun así otro producto usa exactamente ese
-        // valor como SKU real, el TPV responderá 422 "sku already exists" y el
-        // push fallará — es el único caso en que el cliente tendría que renombrar.
-        $fallback = '__WC__' . $postId;
-
-        if ($gtin !== '') {
-            $model = $gtin;
-        } elseif ($sku !== '') {
-            $model = $sku;
-        } else {
-            $model = $fallback;
-        }
-
-        $skuForTpv = $sku !== '' ? $sku : $fallback;
+        // Misma regla que en la ruta bulk, y en el mismo sitio: antes esto
+        // estaba copiado en los dos lados y un arreglo en uno solo dejaba el
+        // bug vivo según por dónde entrara el producto.
+        $ids = TPV_Sync_Identificadores::paraProducto(
+            (string) get_post_meta($postId, '_global_unique_id', true),
+            (string) $product->get_sku(),
+            $postId
+        );
+        $model     = $ids['model'];
+        $skuForTpv = $ids['sku'];
 
         // Guard: el TPV exige price >= 0. Algunos clientes WC modelan
         // descuentos manuales como un "producto" con precio negativo (ej.
@@ -1250,6 +1264,13 @@ class TPV_Sync_Product_Sync
         // rechaza con 422 — no hay forma honesta de mapearlo (un voucher
         // sería el equivalente real). Skip explícito con mensaje claro.
         $rawPrice = (float)($product->get_regular_price() ?: 0);
+        // Producto variable: el precio que viaja es el de la variante más
+        // barata, no el del padre (que en WC viene vacío = 0). Tiene que ser
+        // el MISMO desde el que se calculan los sobreprecios de las variantes
+        // en build_options_for_tpv, o el ticket no cuadra.
+        $baseVariable = $this->basePriceForVariableProduct($product);
+        if ($baseVariable !== null) $rawPrice = $baseVariable;
+
         if ($rawPrice < 0) {
             $this->log('skip', $postId,
                 "Producto con precio negativo (" . $rawPrice . " €) no soportado: el TPV no acepta precios negativos. "
@@ -1462,22 +1483,94 @@ class TPV_Sync_Product_Sync
      * Caso simple: 1 atributo de variación (ej. solo "Talla" o solo "Sabor").
      * Suma stock de variaciones con el mismo valor del atributo.
      */
+    /**
+     * Precio base de un producto variable: la variante MÁS BARATA.
+     *
+     * En WC el padre de un variable no tiene precio propio, así que usarlo
+     * como base (lo que se hacía antes) mandaba el producto a 0 € al TPV y
+     * cada variante con su precio completo como sobreprecio. Medido en
+     * pineapplemoda el 25-09-2026: producto 1331 a 0,00 € con tres variantes
+     * a +24,14 €.
+     *
+     * La decisión del número vive en TPV_Sync_Precio_Variantes, que es pura y
+     * está cubierta por tests. Aquí solo se leen los precios de WC.
+     */
+    private function basePriceForVariants($product, array $variations): float
+    {
+        // Los precios se pasan a NETO antes de compararlos. El precio del
+        // producto viaja sin IVA (la API lo exige y el TPV lo recalcula al
+        // imprimir), así que si la base se eligiera en bruto y los extras se
+        // midieran contra ella, el sobreprecio llevaría el impuesto dentro y
+        // el TPV se lo volvería a sumar encima.
+        //
+        // La conversión la hace priceForTpv() → wc_get_price_excluding_tax(),
+        // que aplica las reglas fiscales reales de CADA variación (su clase de
+        // impuesto, si los precios de la tienda incluyen IVA, las rates
+        // configuradas). Un porcentaje escrito a mano acertaría con el 21% y
+        // fallaría con un reducido o un exento.
+        $precios = [];
+        foreach ($variations as $v) {
+            $precios[] = $this->priceForTpv($v, (float) ($v->get_regular_price() ?: 0));
+        }
+        $precioPadre = $this->priceForTpv($product, (float) ($product->get_regular_price() ?: 0));
+
+        return TPV_Sync_Precio_Variantes::precioBase($precios, $precioPadre);
+    }
+
+    /**
+     * El mismo precio base, pero a partir del producto (recalcula las
+     * variaciones). Lo usa el push para no mandar el padre a 0 €: el precio
+     * que viaja como `price` del producto tiene que ser el mismo desde el que
+     * se miden los sobreprecios, o las cuentas del ticket no cuadran.
+     *
+     * Devuelve null si el producto no es variable o no tiene variaciones
+     * utilizables, para que el caller conserve su comportamiento de siempre.
+     */
+    private function basePriceForVariableProduct($product): ?float
+    {
+        if (!is_object($product) || !method_exists($product, 'is_type')
+            || !$product->is_type('variable')) {
+            return null;
+        }
+
+        $variations = [];
+        foreach ($product->get_children() as $childId) {
+            $v = function_exists('wc_get_product') ? wc_get_product($childId) : null;
+            if (!$v || $v->get_status() === 'private') continue;
+            $variations[] = $v;
+        }
+        if ($variations === []) return null;
+
+        return $this->basePriceForVariants($product, $variations);
+    }
+
     private function build_options_single_attr($product, array $variations): array
     {
-        $attrs     = []; // attrLabel => ['type' => ..., 'values' => [valueLabel => meta]]
-        $basePrice = (float)($product->get_regular_price() ?: 0);
+        $attrs = []; // attrLabel => ['type' => ..., 'values' => [valueLabel => meta]]
+
+        // El precio del padre NO se usa como base tal cual: en un producto
+        // variable de WC viene vacío (=0) y eso dejaba el producto a 0 € en el
+        // TPV con cada variante cargando su precio entero como sobreprecio.
+        // La base es la variante más barata (ver class-precio-variantes.php).
+        $basePrice = $this->basePriceForVariants($product, $variations);
 
         foreach ($variations as $v) {
             $vAttrs = $v->get_attributes();
             $vQty   = max(0, (int)$v->get_stock_quantity());
-            $vPrice = (float)($v->get_regular_price() ?: $basePrice);
-            $priceDiff = $vPrice - $basePrice;
+            // A neto, igual que el base, o el extra llevaría el IVA dentro.
+            // Ojo al fallback: $basePrice YA es neto, así que solo se
+            // convierte el precio propio de la variación.
+            $vRaw   = (float) ($v->get_regular_price() ?: 0);
+            $vPrice = $vRaw > 0 ? $this->priceForTpv($v, $vRaw) : $basePrice;
+            $priceDiff = TPV_Sync_Precio_Variantes::extra($vPrice, $basePrice)['price'];
 
             // Código de barras de la variación: GTIN/EAN/UPC primero, SKU como
             // fallback. Si ambos vacíos, la variante no se podrá escanear.
             $vGtin = trim((string) get_post_meta($v->get_id(), '_global_unique_id', true));
             $vSku  = trim((string) $v->get_sku());
-            $vBarcode = $vGtin !== '' ? $vGtin : $vSku;
+            // Un sku autogenerado por Woo ("__WC__48808-1") no escanea nada:
+            // se descarta en vez de llenar la columna CÓDIGO del TPV.
+            $vBarcode = TPV_Sync_Identificadores::codigoVariante($vGtin, $vSku, (int) $v->get_id());
 
             foreach ($vAttrs as $attrName => $valueSlug) {
                 if ($valueSlug === '') continue;
@@ -1496,9 +1589,13 @@ class TPV_Sync_Product_Sync
                 }
                 $attrs[$attrLabel]['values'][$valueLabel]['quantity'] += $vQty;
                 $attrs[$attrLabel]['values'][$valueLabel]['price_diff'] = $priceDiff;
-                if ($vBarcode !== '' && $attrs[$attrLabel]['values'][$valueLabel]['barcode'] === '') {
-                    $attrs[$attrLabel]['values'][$valueLabel]['barcode'] = $vBarcode;
-                }
+                // Antes se quedaba el PRIMERO y ya: una variación posterior
+                // con EAN de verdad no lo mejoraba nunca.
+                $attrs[$attrLabel]['values'][$valueLabel]['barcode'] =
+                    TPV_Sync_Identificadores::mejorCodigo(
+                        (string) $attrs[$attrLabel]['values'][$valueLabel]['barcode'],
+                        $vGtin, $vSku, (int) $v->get_id()
+                    );
             }
         }
 
@@ -1517,7 +1614,9 @@ class TPV_Sync_Product_Sync
      */
     private function build_options_flattened($product, array $variations): array
     {
-        $basePrice = (float)($product->get_regular_price() ?: 0);
+        // Misma regla que en el caso de un solo atributo: la base es la
+        // variante más barata, no el precio (vacío) del padre.
+        $basePrice = $this->basePriceForVariants($product, $variations);
 
         // Determinar orden estable de atributos: tomamos el orden de la
         // primera variación que tenga atributos. Las variaciones siguientes
@@ -1555,12 +1654,18 @@ class TPV_Sync_Product_Sync
 
             $comboLabel = implode('-', $parts);
             $vQty   = max(0, (int)$v->get_stock_quantity());
-            $vPrice = (float)($v->get_regular_price() ?: $basePrice);
-            $priceDiff = $vPrice - $basePrice;
+            // A neto, igual que el base, o el extra llevaría el IVA dentro.
+            // Ojo al fallback: $basePrice YA es neto, así que solo se
+            // convierte el precio propio de la variación.
+            $vRaw   = (float) ($v->get_regular_price() ?: 0);
+            $vPrice = $vRaw > 0 ? $this->priceForTpv($v, $vRaw) : $basePrice;
+            $priceDiff = TPV_Sync_Precio_Variantes::extra($vPrice, $basePrice)['price'];
 
             $vGtin = trim((string) get_post_meta($v->get_id(), '_global_unique_id', true));
             $vSku  = trim((string) $v->get_sku());
-            $vBarcode = $vGtin !== '' ? $vGtin : $vSku;
+            // Un sku autogenerado por Woo ("__WC__48808-1") no escanea nada:
+            // se descarta en vez de llenar la columna CÓDIGO del TPV.
+            $vBarcode = TPV_Sync_Identificadores::codigoVariante($vGtin, $vSku, (int) $v->get_id());
 
             if (!isset($values[$comboLabel])) {
                 $values[$comboLabel] = [
@@ -1574,9 +1679,9 @@ class TPV_Sync_Product_Sync
             // posible si el cliente duplicó), sumamos.
             $values[$comboLabel]['quantity'] += $vQty;
             $values[$comboLabel]['price_diff'] = $priceDiff;
-            if ($vBarcode !== '' && $values[$comboLabel]['barcode'] === '') {
-                $values[$comboLabel]['barcode'] = $vBarcode;
-            }
+            $values[$comboLabel]['barcode'] = TPV_Sync_Identificadores::mejorCodigo(
+                (string) $values[$comboLabel]['barcode'], $vGtin, $vSku, (int) $v->get_id()
+            );
         }
 
         if (empty($values)) return [];
@@ -2220,10 +2325,98 @@ class TPV_Sync_Product_Sync
     /**
      * @return array{checked:int,synced:int,fixed:int,skipped:int,errors:int}
      */
-    public function reconcileBidirectional(): array
+    /**
+     * Quita del TPV los SKU técnicos que dejó la versión anterior del
+     * conector ("__WC__48853" y compañía).
+     *
+     * Antes, cuando un producto de Woo no tenía SKU, el conector se inventaba
+     * uno y lo metía en los DOS campos: `model` (que el TPV exige) y `sku`
+     * (que es lo que el comerciante ve en pantalla). Los productos nuevos ya
+     * salen con el `sku` vacío; esto arregla los que se subieron antes.
+     *
+     * Solo se manda `sku`. El `model` NO se toca: es lo que se escanea y lo
+     * que sostiene el vínculo — vaciarlo dejaría productos sin identificador y
+     * el siguiente volcado los duplicaría.
+     *
+     * Y no se toca nada en WooCommerce: Woo es la fuente buena del catálogo,
+     * el plugin solo lee de ahí. Si un producto no tiene SKU en Woo, sigue sin
+     * tenerlo.
+     *
+     * @param bool $dryRun true (por defecto) = solo cuenta y devuelve ejemplos.
+     */
+    public function limpiarSkusTecnicos(bool $dryRun = true): array
+    {
+        $stats = ['revisados' => 0, 'a_limpiar' => 0, 'limpiados' => 0,
+                  'errores' => 0, 'ejemplos' => [], 'dry_run' => $dryRun];
+
+        $productos = $this->api->getAll('/products', ['fields' => 'product_id,model,sku']);
+
+        $filas = [];
+        foreach ($productos as $p) {
+            $stats['revisados']++;
+            $filas[] = [
+                'tpv_id' => (int) ($p['product_id'] ?? 0),
+                'sku'    => (string) ($p['sku'] ?? ''),
+                'model'  => (string) ($p['model'] ?? ''),
+            ];
+        }
+
+        // Qué limpiar lo decide la función pura, ya cubierta por tests.
+        $plan = TPV_Sync_Identificadores::planLimpieza($filas);
+        $stats['a_limpiar'] = count($plan);
+
+        $porId = [];
+        foreach ($filas as $f) { $porId[$f['tpv_id']] = $f; }
+        foreach (array_slice($plan, 0, 10) as $item) {
+            $tid = (int) $item['tpv_id'];
+            $stats['ejemplos'][] = [
+                'tpv_id' => $tid,
+                'sku'    => (string) ($porId[$tid]['sku'] ?? ''),
+                'motivo' => 'SKU técnico del conector → se deja vacío',
+            ];
+        }
+
+        // En simulación se corta aquí: ni una escritura.
+        if ($dryRun) return $stats;
+
+        foreach ($plan as $item) {
+            $tid = (int) $item['tpv_id'];
+            if ($tid <= 0) continue;
+            try {
+                $this->api->patch("/products/$tid", ['sku' => '']);
+                $stats['limpiados']++;
+            } catch (Throwable $e) {
+                $stats['errores']++;
+                $this->log('error', $tid, 'limpiar sku: ' . $e->getMessage());
+            }
+        }
+
+        $this->log('ok', 0, sprintf(
+            'limpieza_sku: revisados=%d limpiados=%d errores=%d',
+            $stats['revisados'], $stats['limpiados'], $stats['errores']
+        ));
+
+        return $stats;
+    }
+
+    /**
+     * @param bool       $dryRun   true = solo cuenta y devuelve ejemplos, no escribe.
+     * @param array      $politica Sobrescribe el dueño por dominio para esta pasada.
+     */
+    public function reconcileBidirectional(bool $dryRun = false, array $politica = []): array
     {
         global $wpdb;
-        $stats = ['checked' => 0, 'synced' => 0, 'fixed' => 0, 'skipped' => 0, 'errors' => 0];
+        $stats = ['checked' => 0, 'synced' => 0, 'fixed' => 0, 'skipped' => 0, 'errors' => 0,
+                  'divergentes' => 0, 'ejemplos' => [], 'dry_run' => $dryRun];
+
+        // El dueño sale del ajuste que el comerciante ya eligió en el
+        // asistente (`tpv_sync_principal`), traducido a política por dominio.
+        // $politica permite afinarlo para esta pasada sin tocar el ajuste.
+        $politica = TPV_Sync_Reconciler::politicaDesdePrincipal(
+            (string) get_option('tpv_sync_principal', ''),
+            $politica
+        );
+        $stats['politica'] = $politica;
 
         try {
             $tpvList = $this->api->getAll('/products', ['per_page' => 200]);
@@ -2263,57 +2456,115 @@ class TPV_Sync_Product_Sync
             if ($postId === 0) {
                 $model = trim((string) ($p['model'] ?? ''));
                 if ($model !== '' && isset($wcByModel[$model])) {
-                    // Vínculo por model: solo asociar, no reimportar.
+                    // Vínculo por model: solo asociar, no reimportar. Asociar
+                    // no es escribir catálogo, pero en simulación tampoco se
+                    // toca nada: el plan tiene que poder mirarse sin efectos.
+                    $stats['synced']++;
+                    if ($dryRun) continue;
                     $matchPostId = (int) $wcByModel[$model]['post_id'];
                     update_post_meta($matchPostId, '_tpv_product_id', $tpvId);
-                    $stats['synced']++;
                     continue;
                 }
+
+                // Producto que solo está en el TPV. Solo se trae a Woo si el
+                // catálogo lo manda el TPV; si manda Woo, se deja quieto (y
+                // nunca se borra en ninguno de los dos lados).
+                if ($politica['catalogo'] !== 'tpv') {
+                    $stats['skipped']++;
+                    continue;
+                }
+                $stats['synced']++;
+                if ($dryRun) continue;
                 try {
                     $r = $this->upsert($p);
-                    if ($r === 'created' || $r === 'updated') {
-                        $stats['synced']++;
-                    } else {
+                    if ($r !== 'created' && $r !== 'updated') {
+                        $stats['synced']--;
                         $stats['skipped']++;
                     }
                 } catch (Throwable $e) {
                     $this->log('error',$tpvId, 'upsert: ' . $e->getMessage());
+                    $stats['synced']--;
                     $stats['errors']++;
                 }
                 continue;
             }
 
-            // Existe en ambos → comparar updated_at.
-            $tpvUpdated = strtotime((string) ($p['date_modified'] ?? ''));
-            $postModified = $wpdb->get_var($wpdb->prepare(
-                "SELECT post_modified_gmt FROM {$wpdb->posts} WHERE ID = %d",
-                $postId
-            ));
-            $wcUpdated = $postModified ? strtotime((string) $postModified) : 0;
+            // Existe en ambos → decide el reconciliador, por dominio.
+            //
+            // Antes esto comparaba `post_modified` contra `date_modified` con
+            // 60 s de margen. Se ha quitado: las fechas mienten (una
+            // reindexación de Woo toca post_modified sin que nadie edite) y el
+            // resultado no era predecible para el comerciante. Y el stock se
+            // corregía siempre hacia el TPV sin mirar nada, lo que impedía el
+            // modo auditoría.
+            $wcProduct = function_exists('wc_get_product') ? wc_get_product($postId) : null;
+            $fotoWc = [
+                'external_id' => (string) $postId,
+                'name'        => get_the_title($postId),
+                'price'       => $wcProduct ? (float) ($wcProduct->get_regular_price() ?: 0) : 0.0,
+                'sku'         => $wcProduct ? (string) $wcProduct->get_sku() : '',
+                'quantity'    => (float) get_post_meta($postId, '_stock', true),
+            ];
+            $fotoTpv = [
+                'tpv_id'      => $tpvId,
+                'external_id' => (string) $postId,
+                'name'        => (string) ($p['name'] ?? ''),
+                'price'       => (float) ($p['price'] ?? 0),
+                'sku'         => (string) ($p['sku'] ?? ''),
+                'quantity'    => (float) ($p['quantity'] ?? 0),
+            ];
 
-            // Stock: TPV gana siempre (no se modifica con post_modified).
-            $tpvQty = (float) ($p['quantity'] ?? 0);
-            $wcQty  = (float) get_post_meta($postId, '_stock', true);
-            if (abs($wcQty - $tpvQty) > 0.0001) {
-                $this->update_stock($tpvId, (int) $tpvQty);
-                $stats['fixed']++;
+            $decision = TPV_Sync_Reconciler::decidir($fotoWc, $fotoTpv, $politica);
+
+            if ($decision['discrepa']) {
+                $stats['divergentes']++;
+                if (count($stats['ejemplos']) < 10) {
+                    $stats['ejemplos'][] = [
+                        'tpv_id'   => $tpvId,
+                        'post_id'  => $postId,
+                        'nombre'   => $fotoWc['name'],
+                        'catalogo' => $decision['catalogo']['motivo'],
+                        'stock'    => $decision['stock']['motivo'],
+                    ];
+                }
             }
 
-            if ($tpvUpdated > 0 && $tpvUpdated > $wcUpdated + 60) {
+            // En simulación no se escribe nada: solo se cuenta y se enseña.
+            if ($dryRun) continue;
+
+            if ($decision['stock']['accion'] === 'pull') {
+                $this->update_stock($tpvId, (int) $fotoTpv['quantity']);
+                $stats['fixed']++;
+            } elseif ($decision['stock']['accion'] === 'push') {
+                // push_wc_stock_change() es el handler del hook de WC y espera
+                // (WC_Product, props cambiadas); aquí se manda el valor
+                // directamente por la API, que es lo que hace por dentro.
+                try {
+                    $this->api->patch("/products/$tpvId", [
+                        'quantity' => (float) $fotoWc['quantity'],
+                    ]);
+                    $stats['fixed']++;
+                } catch (Throwable $e) {
+                    $this->log('error', $tpvId, 'stock push: ' . $e->getMessage());
+                    $stats['errors']++;
+                }
+            }
+
+            if ($decision['catalogo']['accion'] === 'pull') {
                 try {
                     $this->upsert($p);
                     $stats['fixed']++;
                 } catch (Throwable $e) {
-                    $this->log('error',$tpvId, 'upsert (TPV gana): ' . $e->getMessage());
+                    $this->log('error', $tpvId, 'upsert (manda el TPV): ' . $e->getMessage());
                     $stats['errors']++;
                 }
-            } elseif ($wcUpdated > 0 && $wcUpdated > $tpvUpdated + 60) {
+            } elseif ($decision['catalogo']['accion'] === 'push') {
                 try {
                     if ($this->push_wc_product_to_tpv($postId)) {
                         $stats['fixed']++;
                     }
                 } catch (Throwable $e) {
-                    $this->log('error',$tpvId, 'push (WC gana): ' . $e->getMessage());
+                    $this->log('error', $tpvId, 'push (manda Woo): ' . $e->getMessage());
                     $stats['errors']++;
                 }
             }
@@ -2327,16 +2578,21 @@ class TPV_Sync_Product_Sync
                AND (pm.meta_value IS NULL OR pm.meta_value = '' OR pm.meta_value = '0')
              LIMIT 1000"
         ) ?: [];
+        // Solo se suben si el catálogo lo manda Woo. Con el TPV al mando, un
+        // producto que solo existe en Woo se deja quieto — nunca se borra.
         foreach ($orphans as $postId) {
             $postId = (int) $postId;
+            if ($politica['catalogo'] !== 'woo') { $stats['skipped']++; continue; }
+            $stats['synced']++;
+            if ($dryRun) continue;
             try {
-                if ($this->push_wc_product_to_tpv($postId)) {
-                    $stats['synced']++;
-                } else {
+                if (!$this->push_wc_product_to_tpv($postId)) {
+                    $stats['synced']--;
                     $stats['skipped']++;
                 }
             } catch (Throwable $e) {
                 $this->log('error',$postId, 'push huérfano: ' . $e->getMessage());
+                $stats['synced']--;
                 $stats['errors']++;
             }
         }

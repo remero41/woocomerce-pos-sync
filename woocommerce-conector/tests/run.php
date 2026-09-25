@@ -18,6 +18,7 @@ declare(strict_types=1);
 // Solo lo que exigen los ficheros bajo prueba al ser incluidos. Si un test
 // necesita mas WP que esto, probablemente esta probando WP y no el plugin.
 define('ABSPATH', __DIR__);
+define('TPV_SYNC_TESTING', true);
 
 if (!function_exists('get_option')) {
     function get_option($k, $default = false) { return $GLOBALS['__wp_options'][$k] ?? $default; }
@@ -116,6 +117,13 @@ require_once __DIR__ . '/test_auth_401_diagnostico.php';
 require_once __DIR__ . '/test_sync_health_panel.php';
 require_once __DIR__ . '/test_imagenes_batch.php';
 require_once __DIR__ . '/test_actualizador.php';
+require_once __DIR__ . '/test_reconcile_dueno.php';
+require_once __DIR__ . '/test_precio_variantes.php';
+require_once __DIR__ . '/test_sku_mapeo.php';
+require_once __DIR__ . '/test_imagenes_indices.php';
+require_once __DIR__ . '/test_politica_desde_ajustes.php';
+require_once __DIR__ . '/test_reconcile_enganchado.php';
+require_once __DIR__ . '/test_panel_reconciliar.php';
 require_once dirname(__DIR__) . '/includes/class-order-sync.php';
 require_once dirname(__DIR__) . '/includes/class-admin.php';
 
@@ -138,5 +146,12 @@ run_timestamp_webhook_tests($t);
 run_webhook_version_tests($t);
 run_devolucion_stock_tests($t);
 run_reconciliacion_tests($t);
+run_reconcile_dueno_tests($t);
+run_precio_variantes_tests($t);
+run_sku_mapeo_tests($t);
+run_imagenes_indices_tests($t);
+run_politica_desde_ajustes_tests($t);
+run_reconcile_enganchado_tests($t);
+run_panel_reconciliar_tests($t);
 
 exit($t->summary());
