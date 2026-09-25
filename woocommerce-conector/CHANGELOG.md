@@ -1,3 +1,55 @@
+## 2.6.0
+
+### El catalogo llegaba al TPV con precios a cero y codigos inventados
+
+- **Un producto con variantes viajaba a 0 EUR y cada variante cargaba el
+  precio entero como sobreprecio.** En WooCommerce un producto variable no
+  tiene precio propio -- el precio vive en cada variacion -- y el conector
+  leia el del padre, que viene vacio. Resultado: el producto quedaba a 0,00
+  en el TPV y quien lo vendiera sin elegir variante cobraba cero. Ahora el
+  producto vale lo que su variante mas barata y cada variante suma solo la
+  diferencia.
+
+- **Al sobreprecio de las variantes no se le quitaba el IVA.** El precio del
+  producto si viajaba neto, asi que el TPV volvia a aplicar el impuesto
+  encima del sobreprecio. Ahora los dos se miden igual, con las reglas
+  fiscales reales de cada variacion.
+
+- **El TPV mostraba SKU que nadie habia escrito**, del tipo `__WC__48853`.
+  Cuando el producto no tenia SKU en WooCommerce, el conector se inventaba
+  uno y lo ponia tanto en el campo Modelo (que el TPV necesita) como en el
+  SKU (que es el que se ve). Ahora el SKU llega vacio si en la tienda esta
+  vacio. Hay un boton para limpiar los que ya se subieron.
+
+- **Variantes sin codigo de barras.** Solo se guardaba el codigo de la
+  primera variante de cada combinacion, asi que sus hermanas se quedaban con
+  la columna vacia. Y cuando una variacion no tenia ni EAN ni SKU no se
+  mandaba nada, cuando el numero que WooCommerce le asigna (#48907) es
+  justamente el que muchas tiendas imprimen en la etiqueta. Ahora el orden
+  es: EAN, si no el SKU que hayas escrito, si no el numero de la variacion.
+
+- **Imagenes que no subian y no se reintentaban nunca.** Al sincronizar mas
+  de 50 imagenes, las del segundo grupo en adelante se daban por subidas sin
+  haberlo hecho, y como quedaban marcadas no se volvia a intentar. El mismo
+  fallo afectaba a los productos con mas de 50 variantes, que podian guardar
+  el vinculo en el producto equivocado.
+
+### Reconciliar ya no puede machacar el lado bueno
+
+- **La reconciliacion se disparaba sola al reconectar** tras una pausa, y
+  decidia quien ganaba por la fecha de modificacion. Si el catalogo del TPV
+  estaba mal, esos datos bajaban a la tienda sin que nadie lo pidiera. Ya no
+  se lanza sola: la lanzas tu cuando quieras.
+
+- **Ahora eliges quien manda, y por separado para stock y catalogo.** Lo
+  normal es que el stock lo lleve el TPV (es donde se vende) y el catalogo
+  quien lo mantenga. Un unico interruptor para las dos cosas no vale: "manda
+  la tienda" aplicado al stock borraria lo que se acaba de vender en caja.
+
+- **Nada se aplica sin verlo antes.** El boton de aplicar esta apagado hasta
+  que simulas, y la simulacion te dice cuantos productos cambiarian y te
+  enseña ejemplos sin tocar nada.
+
 ## 2.5.0
 
 ### Las devoluciones del TPV reponen el stock
