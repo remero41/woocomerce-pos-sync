@@ -17,6 +17,8 @@ class TPV_Sync_Admin
         add_action('wp_ajax_tpv_sync_disconnect',       [$this, 'ajax_disconnect']);
         add_action('wp_ajax_tpv_sync_test_connection',  [$this, 'ajax_test_connection']);
         add_action('wp_ajax_tpv_sync_check_sync',       [$this, 'ajax_check_sync']);
+        add_action('wp_ajax_tpv_sync_reconcile',        [$this, 'ajax_reconcile']);
+        add_action('wp_ajax_tpv_sync_clean_skus',       [$this, 'ajax_clean_skus']);
         add_action('wp_ajax_tpv_sync_clear_principal',  [$this, 'ajax_clear_principal']);
         add_action('wp_ajax_tpv_sync_full_disconnect',  [$this, 'ajax_full_disconnect']);
         add_action('wp_ajax_tpv_sync_count_remote',     [$this, 'ajax_count_remote']);
@@ -2014,6 +2016,45 @@ class TPV_Sync_Admin
                 </div>
 
                 <div class="cc-adv-section">
+                    <h3><?= esc_html__('Reconciliar catálogos', 'tpv-sync') ?></h3>
+                    <p class="cc-step-help"><?= esc_html__('Compara los dos catálogos y corrige las diferencias. Elige quién manda en cada cosa: el stock lo normal es que lo lleve el TPV (es donde se vende), y el catálogo quien lo mantenga. Simula siempre antes de aplicar.', 'tpv-sync') ?></p>
+                    <div class="cc-adv-actions">
+                        <label for="cc-recon-catalogo"><?= esc_html__('Catálogo (nombre, precio, SKU):', 'tpv-sync') ?></label>
+                        <select id="cc-recon-catalogo">
+                            <option value=""><?= esc_html__('Lo configurado', 'tpv-sync') ?></option>
+                            <option value="woo"><?= esc_html__('Manda WooCommerce', 'tpv-sync') ?></option>
+                            <option value="tpv"><?= esc_html__('Manda el TPV', 'tpv-sync') ?></option>
+                            <option value="ninguno"><?= esc_html__('No tocar', 'tpv-sync') ?></option>
+                        </select>
+
+                        <label for="cc-recon-stock"><?= esc_html__('Stock:', 'tpv-sync') ?></label>
+                        <select id="cc-recon-stock">
+                            <option value=""><?= esc_html__('Lo configurado (el TPV)', 'tpv-sync') ?></option>
+                            <option value="tpv"><?= esc_html__('Manda el TPV', 'tpv-sync') ?></option>
+                            <option value="woo"><?= esc_html__('Manda WooCommerce', 'tpv-sync') ?></option>
+                            <option value="ninguno"><?= esc_html__('No tocar', 'tpv-sync') ?></option>
+                        </select>
+                    </div>
+                    <div class="cc-adv-actions">
+                        <button type="button" class="button button-primary" id="cc-recon-simular"><?= esc_html__('Simular', 'tpv-sync') ?></button>
+                        <button type="button" class="button" id="cc-recon-aplicar" disabled><?= esc_html__('Aplicar', 'tpv-sync') ?></button>
+                        <span id="cc-recon-result" class="cc-result"></span>
+                    </div>
+                    <div id="cc-recon-plan" style="display:none;margin-top:10px"></div>
+                </div>
+
+                <div class="cc-adv-section">
+                    <h3><?= esc_html__('Limpiar SKU técnicos del TPV', 'tpv-sync') ?></h3>
+                    <p class="cc-step-help"><?= esc_html__('Las versiones anteriores inventaban un SKU (tipo «__WC__48853») cuando el producto no tenía SKU en WooCommerce, y lo dejaban visible en el TPV. Esto lo vacía. No toca WooCommerce ni el campo Modelo, así que los productos siguen vinculados.', 'tpv-sync') ?></p>
+                    <div class="cc-adv-actions">
+                        <button type="button" class="button button-primary" id="cc-sku-simular"><?= esc_html__('Simular', 'tpv-sync') ?></button>
+                        <button type="button" class="button" id="cc-sku-aplicar" disabled><?= esc_html__('Aplicar', 'tpv-sync') ?></button>
+                        <span id="cc-sku-result" class="cc-result"></span>
+                    </div>
+                    <div id="cc-sku-plan" style="display:none;margin-top:10px"></div>
+                </div>
+
+                <div class="cc-adv-section">
                     <h3><?= esc_html__('Sincronizar clientes', 'tpv-sync') ?></h3>
                     <p class="cc-step-help"><?= esc_html__('Empuja todos los clientes WooCommerce al TPV. Los que ya existan en el TPV (mismo email) se reconectan automáticamente.', 'tpv-sync') ?></p>
                     <div class="cc-adv-actions">
@@ -2161,6 +2202,151 @@ class TPV_Sync_Admin
                         $r.text(<?= wp_json_encode(__('Error en la importación', 'tpv-sync')) ?>).addClass('cc-result-err');
                     }
                 });
+            });
+
+            // ── Reconciliar ───────────────────────────────────────────────
+            // "Aplicar" nace deshabilitado y solo se abre tras una simulación:
+            // escribir sobre miles de productos sin haber visto antes qué va a
+            // cambiar no es reconciliar, es apostar. Cambiar cualquiera de los
+            // dos selectores vuelve a cerrarlo — el plan que se vio ya no es
+            // el que se aplicaría.
+            function reconPolitica() {
+                return {catalogo: $('#cc-recon-catalogo').val() || '',
+                        stock:    $('#cc-recon-stock').val()    || ''};
+            }
+            $('#cc-recon-catalogo, #cc-recon-stock').on('change', function() {
+                $('#cc-recon-aplicar').prop('disabled', true);
+                $('#cc-recon-plan').hide().empty();
+                $('#cc-recon-result').text('').removeClass('cc-result-ok cc-result-err');
+            });
+
+            function reconLanzar(dryRun) {
+                var p = reconPolitica();
+                var $r = $('#cc-recon-result').removeClass('cc-result-ok cc-result-err')
+                    .text(dryRun ? <?= wp_json_encode(__('Simulando…', 'tpv-sync')) ?>
+                                 : <?= wp_json_encode(__('Aplicando…', 'tpv-sync')) ?>);
+                $('#cc-recon-simular, #cc-recon-aplicar').prop('disabled', true);
+
+                $.post(ajaxurl, {action:'tpv_sync_reconcile', nonce:nonce,
+                                 dry_run: dryRun ? 1 : 0,
+                                 catalogo: p.catalogo, stock: p.stock}, function(resp) {
+                    $('#cc-recon-simular').prop('disabled', false);
+                    if (!resp.success) {
+                        $r.text((resp.data && resp.data.message) || <?= wp_json_encode(__('Error', 'tpv-sync')) ?>)
+                          .addClass('cc-result-err');
+                        return;
+                    }
+                    var d = resp.data || {};
+                    var n = d.divergentes || 0;
+
+                    if (dryRun) {
+                        $r.text(n === 0
+                            ? <?= wp_json_encode(__('Los dos catálogos coinciden: no hay nada que cambiar.', 'tpv-sync')) ?>
+                            : n + ' ' + <?= wp_json_encode(__('productos cambiarían', 'tpv-sync')) ?>)
+                          .addClass('cc-result-ok');
+                        // Solo se abre "Aplicar" si de verdad hay algo que hacer.
+                        $('#cc-recon-aplicar').prop('disabled', n === 0);
+                    } else {
+                        $r.text((d.fixed || 0) + ' ' + <?= wp_json_encode(__('corregidos', 'tpv-sync')) ?>
+                                + ', ' + (d.synced || 0) + ' ' + <?= wp_json_encode(__('sincronizados', 'tpv-sync')) ?>)
+                          .addClass('cc-result-ok');
+                        $('#cc-recon-aplicar').prop('disabled', true);
+                    }
+
+                    var ej = d.ejemplos || [];
+                    if (ej.length) {
+                        var html = '<p><strong>' + <?= wp_json_encode(__('Ejemplos:', 'tpv-sync')) ?>
+                                 + '</strong></p><ul style="margin-left:18px;list-style:disc">';
+                        for (var i = 0; i < ej.length; i++) {
+                            html += '<li>' + $('<div>').text(
+                                (ej[i].nombre || '#' + ej[i].tpv_id) + ' — ' +
+                                (ej[i].catalogo || '') + ' · ' + (ej[i].stock || '')
+                            ).html() + '</li>';
+                        }
+                        html += '</ul>';
+                        if (n > ej.length) {
+                            html += '<p>' + $('<div>').text(
+                                <?= wp_json_encode(__('…y', 'tpv-sync')) ?> + ' ' + (n - ej.length) + ' ' +
+                                <?= wp_json_encode(__('más.', 'tpv-sync')) ?>).html() + '</p>';
+                        }
+                        $('#cc-recon-plan').html(html).show();
+                    } else {
+                        $('#cc-recon-plan').hide().empty();
+                    }
+                }).fail(function() {
+                    $('#cc-recon-simular').prop('disabled', false);
+                    $r.text(<?= wp_json_encode(__('Error de conexión', 'tpv-sync')) ?>).addClass('cc-result-err');
+                });
+            }
+
+            // ── Limpiar SKU técnicos ──────────────────────────────────────
+            // Mismo trato que la reconciliación: "Aplicar" cerrado hasta haber
+            // visto el plan.
+            function skuLanzar(dryRun) {
+                var $r = $('#cc-sku-result').removeClass('cc-result-ok cc-result-err')
+                    .text(dryRun ? <?= wp_json_encode(__('Buscando…', 'tpv-sync')) ?>
+                                 : <?= wp_json_encode(__('Limpiando…', 'tpv-sync')) ?>);
+                $('#cc-sku-simular, #cc-sku-aplicar').prop('disabled', true);
+
+                $.post(ajaxurl, {action:'tpv_sync_clean_skus', nonce:nonce,
+                                 dry_run: dryRun ? 1 : 0}, function(resp) {
+                    $('#cc-sku-simular').prop('disabled', false);
+                    if (!resp.success) {
+                        $r.text((resp.data && resp.data.message) || <?= wp_json_encode(__('Error', 'tpv-sync')) ?>)
+                          .addClass('cc-result-err');
+                        return;
+                    }
+                    var d = resp.data || {};
+                    var n = d.a_limpiar || 0;
+
+                    if (dryRun) {
+                        $r.text(n === 0
+                            ? <?= wp_json_encode(__('No hay ningún SKU técnico que limpiar.', 'tpv-sync')) ?>
+                            : n + ' ' + <?= wp_json_encode(__('productos con SKU inventado', 'tpv-sync')) ?>)
+                          .addClass('cc-result-ok');
+                        $('#cc-sku-aplicar').prop('disabled', n === 0);
+                    } else {
+                        $r.text((d.limpiados || 0) + ' ' + <?= wp_json_encode(__('SKU limpiados', 'tpv-sync')) ?>
+                                + (d.errores ? ', ' + d.errores + ' ' + <?= wp_json_encode(__('con error', 'tpv-sync')) ?> : ''))
+                          .addClass('cc-result-ok');
+                        $('#cc-sku-aplicar').prop('disabled', true);
+                    }
+
+                    var ej = d.ejemplos || [];
+                    if (ej.length) {
+                        var html = '<p><strong>' + <?= wp_json_encode(__('Ejemplos:', 'tpv-sync')) ?>
+                                 + '</strong></p><ul style="margin-left:18px;list-style:disc">';
+                        for (var i = 0; i < ej.length; i++) {
+                            html += '<li>' + $('<div>').text(
+                                '#' + ej[i].tpv_id + ' — ' + (ej[i].sku || '')
+                            ).html() + '</li>';
+                        }
+                        html += '</ul>';
+                        if (n > ej.length) {
+                            html += '<p>' + $('<div>').text(
+                                <?= wp_json_encode(__('…y', 'tpv-sync')) ?> + ' ' + (n - ej.length) + ' ' +
+                                <?= wp_json_encode(__('más.', 'tpv-sync')) ?>).html() + '</p>';
+                        }
+                        $('#cc-sku-plan').html(html).show();
+                    } else {
+                        $('#cc-sku-plan').hide().empty();
+                    }
+                }).fail(function() {
+                    $('#cc-sku-simular').prop('disabled', false);
+                    $r.text(<?= wp_json_encode(__('Error de conexión', 'tpv-sync')) ?>).addClass('cc-result-err');
+                });
+            }
+
+            $('#cc-sku-simular').on('click', function() { skuLanzar(true); });
+            $('#cc-sku-aplicar').on('click', function() {
+                if (!confirm(<?= wp_json_encode(__('Se va a vaciar el SKU de los productos que acabas de ver. No afecta a WooCommerce. ¿Continuar?', 'tpv-sync')) ?>)) return;
+                skuLanzar(false);
+            });
+
+            $('#cc-recon-simular').on('click', function() { reconLanzar(true); });
+            $('#cc-recon-aplicar').on('click', function() {
+                if (!confirm(<?= wp_json_encode(__('Se van a aplicar los cambios que acabas de ver. ¿Continuar?', 'tpv-sync')) ?>)) return;
+                reconLanzar(false);
             });
 
             $('#cc-push').on('click', function() {
@@ -2771,6 +2957,80 @@ class TPV_Sync_Admin
      *   { synced, islands_wc, islands_tpv, divergences, unimportable,
      *     wc_total, tpv_total, only_in_tpv_sample, error }
      */
+    /**
+     * Reconciliación con dueño explícito por dominio.
+     *
+     * Con dry_run=1 (como entra siempre la UI) no escribe nada: cuenta cuántos
+     * productos cambiarían y devuelve hasta 10 ejemplos con el motivo. El
+     * botón de aplicar solo se abre después de eso.
+     *
+     * Antes, la única reconciliación bidireccional que había se disparaba sola
+     * al reconectar y decidía por fecha de modificación. Ahora quien decide es
+     * el comerciante, y el default sale de lo que ya eligió en el asistente.
+     */
+    public function ajax_reconcile(): void
+    {
+        check_ajax_referer('tpv_sync', 'nonce');
+        if (!current_user_can('manage_woocommerce')) {
+            wp_send_json_error(['message' => __('Permission denied', 'tpv-sync')], 403);
+        }
+        @set_time_limit(300);
+        if (session_status() === PHP_SESSION_ACTIVE) { @session_write_close(); }
+
+        $dryRun = !isset($_POST['dry_run']) || (string) $_POST['dry_run'] === '1';
+
+        // Solo se aceptan los valores conocidos; lo demás se ignora y manda
+        // la política configurada.
+        $politica = [];
+        foreach (['catalogo', 'stock'] as $dominio) {
+            $v = isset($_POST[$dominio]) ? sanitize_text_field((string) $_POST[$dominio]) : '';
+            if (in_array($v, ['tpv', 'woo', 'ninguno'], true)) {
+                $politica[$dominio] = $v;
+            }
+        }
+
+        try {
+            $api = new TPV_Sync_API_Client();
+            if (!$api->isConfigured()) {
+                wp_send_json_error(['message' => __('Configura primero las credenciales.', 'tpv-sync')]);
+            }
+            $sync  = new TPV_Sync_Product_Sync($api);
+            $stats = $sync->reconcileBidirectional($dryRun, $politica);
+            wp_send_json_success($stats);
+        } catch (Throwable $e) {
+            wp_send_json_error(['message' => $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Limpia los SKU técnicos que dejó la versión anterior del conector.
+     *
+     * Con dry_run=1 (como entra la UI, y como entra cualquier petición que no
+     * lo diga) solo cuenta y devuelve ejemplos.
+     */
+    public function ajax_clean_skus(): void
+    {
+        check_ajax_referer('tpv_sync', 'nonce');
+        if (!current_user_can('manage_woocommerce')) {
+            wp_send_json_error(['message' => __('Permission denied', 'tpv-sync')], 403);
+        }
+        @set_time_limit(300);
+        if (session_status() === PHP_SESSION_ACTIVE) { @session_write_close(); }
+
+        $dryRun = !isset($_POST['dry_run']) || (string) $_POST['dry_run'] === '1';
+
+        try {
+            $api = new TPV_Sync_API_Client();
+            if (!$api->isConfigured()) {
+                wp_send_json_error(['message' => __('Configura primero las credenciales.', 'tpv-sync')]);
+            }
+            $sync = new TPV_Sync_Product_Sync($api);
+            wp_send_json_success($sync->limpiarSkusTecnicos($dryRun));
+        } catch (Throwable $e) {
+            wp_send_json_error(['message' => $e->getMessage()]);
+        }
+    }
+
     public function ajax_check_sync(): void
     {
         check_ajax_referer('tpv_sync', 'nonce');
@@ -3372,28 +3632,27 @@ class TPV_Sync_Admin
                 $finalSecret = (string)($result['data']['secret'] ?? $preAgreedSecret);
                 update_option('tpv_sync_webhook_secret', $finalSecret);
 
-                // Si veníamos de un "Parar" reciente con >5 min de pausa,
-                // disparamos reconciliación bidireccional silenciosa para
-                // alinear cambios ocurridos durante la pausa. Best-effort:
-                // si falla, seguimos respondiendo OK al usuario porque el
-                // webhook YA está activo y los cambios futuros viajarán.
+                // Si veníamos de un "Parar" reciente con >5 min de pausa, algo
+                // pudo cambiar en los dos lados mientras no había webhook.
+                //
+                // Aquí ANTES se lanzaba reconcileBidirectional() en silencio.
+                // Eso era peligroso: ese reconciliador decide por fecha de
+                // modificación y puede bajar al catálogo de Woo los datos del
+                // TPV — y si el volcado inicial dejó el TPV mal (SKU con
+                // prefijo técnico, variantes sin precio), la "reconciliación
+                // automática" machacaba justo la fuente buena, sin que nadie
+                // lo hubiera pedido ni visto venir.
+                //
+                // Ahora solo se DEJA LA SEÑAL. Quien reconcilia es el usuario,
+                // eligiendo dueño por dominio y pasando antes por la
+                // simulación. Nada se escribe por iniciativa propia.
                 $disconnectedAt = (int) get_option('tpv_sync_disconnected_at', 0);
-                $reconStats = null;
-                if ($disconnectedAt > 0 && (time() - $disconnectedAt) > 300) {
-                    try {
-                        $sync = new TPV_Sync_Product_Sync(new TPV_Sync_API_Client());
-                        if (method_exists($sync, 'reconcileBidirectional')) {
-                            $reconStats = $sync->reconcileBidirectional();
-                        }
-                    } catch (Throwable $e) {
-                        // Log silencioso, no rompemos la respuesta al usuario.
-                    }
-                }
+                $sugerirReconciliar = $disconnectedAt > 0 && (time() - $disconnectedAt) > 300;
                 update_option('tpv_sync_disconnected_at', 0, false);
 
                 wp_send_json_success([
-                    'status'    => 'ok',
-                    'reconcile' => $reconStats,
+                    'status'              => 'ok',
+                    'sugerir_reconciliar' => $sugerirReconciliar,
                 ]);
             } else {
                 wp_send_json_error($result['errors'][0]['message'] ?? wp_json_encode($result));

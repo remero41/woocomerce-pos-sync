@@ -362,6 +362,16 @@ class TPV_Sync_API_Client
         // Chunk en lotes de MAX_OPERATIONS (la API limita a 50)
         $max     = 50;
         $results = [];
+        // Desplazamiento del lote actual dentro de la lista completa.
+        //
+        // La API numera sus resultados desde 0 en CADA petición
+        // (BatchController → BulkResult::add($i, ...)). Al concatenar los
+        // lotes sin corregir, el resultado 0 del segundo lote parecía el de
+        // la operación 0 de la lista entera. Quien llama nos pasó UNA lista y
+        // casa los resultados contra ella por `index`: con 120 imágenes, la
+        // 51 se marcaba como subida bajo la URL de la 1 — y como quedaba
+        // registrada en `_tpv_images_sent`, no se reintentaba nunca.
+        $offset  = 0;
         foreach (array_chunk($operations, $max) as $chunk) {
             $resp = $this->post('/batch', ['operations' => $chunk]);
             // La API envuelve la respuesta en {"data": {"results": [...]}}
@@ -374,8 +384,18 @@ class TPV_Sync_API_Client
                   ?? $resp['results']
                   ?? null;
             if (is_array($items)) {
-                $results = array_merge($results, $items);
+                // Reindexamos a coordenadas de la lista completa antes de
+                // acumular: el índice que devolvemos se refiere a la lista que
+                // nos pasaron, no a un trozo interno que quien llama ni sabe
+                // que existe.
+                foreach ($items as $item) {
+                    if (is_array($item) && isset($item['index'])) {
+                        $item['index'] = (int) $item['index'] + $offset;
+                    }
+                    $results[] = $item;
+                }
             }
+            $offset += count($chunk);
         }
         return ['results' => $results];
     }
