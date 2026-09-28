@@ -401,9 +401,16 @@ class TPV_Sync_Product_Sync
             // No tocamos _global_unique_id: si el admin de WC lo puso a mano,
             // respetamos su valor. Si no existía, sigue sin existir.
         }
-        update_post_meta($postId, '_manage_stock',  'yes');
-        update_post_meta($postId, '_stock',         (int)($p['quantity'] ?? 0));
-        update_post_meta($postId, '_stock_status',  ($p['quantity'] ?? 0) > 0 ? 'instock' : 'outofstock');
+        // Stock: solo si el TPV lo cuenta (subtract). Antes se forzaba
+        // `_manage_stock=yes` con el stock del TPV SIEMPRE, y un producto que
+        // ninguno de los dos contaba (TPV a 0 sin significado) quedaba
+        // «Agotado» en la tienda online con cualquier aviso del TPV.
+        // Un producto nuevo se trata como gestionado si la API no dice nada
+        // (comportamiento de siempre para una API anterior a `subtract`).
+        $wooGestiona = $created || get_post_meta($postId, '_manage_stock', true) === 'yes';
+        foreach (TPV_Sync_Stock::haciaWoo($p, $wooGestiona) as $clave => $valor) {
+            update_post_meta($postId, $clave, $valor);
+        }
         update_post_meta($postId, self::TPV_ID_META, $tpvId);
 
         // Mapeo inverso de impuestos TPV → WC.
@@ -584,6 +591,12 @@ class TPV_Sync_Product_Sync
                 }
                 return;
             }
+            // Woo no cuenta este producto: el número del TPV no significa
+            // nada aquí. Escribirlo dejaba «Agotado» un producto sin gestión
+            // de stock con la primera venta de caja (0 → -1).
+            if (!TPV_Sync_Stock::seCuenta(get_post_meta($postId, '_manage_stock', true) === 'yes', [])) {
+                return;
+            }
             update_post_meta($postId, '_stock', $quantity);
             update_post_meta($postId, '_stock_status', $quantity > 0 ? 'instock' : 'outofstock');
             wc_delete_product_transients($postId);
@@ -741,6 +754,13 @@ class TPV_Sync_Product_Sync
                         }
                     }
                 } else {
+                    // Solo hay stock que corregir si los dos lados lo cuentan.
+                    // Si no, el número de uno es ruido para el otro: el 0 de
+                    // un producto que el TPV no resta no es un agotado.
+                    $wooGestiona = get_post_meta($postId, '_manage_stock', true) === 'yes';
+                    if (!TPV_Sync_Stock::seCuenta($wooGestiona, $data)) {
+                        continue;
+                    }
                     $wcQty = (float)get_post_meta($postId, '_stock', true);
                     if (abs($wcQty - $tpvQty) > 0.0001) {
                         $this->update_stock($tpvId, $tpvQty);
@@ -922,19 +942,49 @@ class TPV_Sync_Product_Sync
         }
 
         // Persistir mapeos con los TPV ids devueltos.
-        $results = $resp['data']['results'] ?? [];
-        foreach ($results as $r) {
-            $idx = (int) ($r['index'] ?? -1);
-            $tpvId = (int) ($r['product_id'] ?? 0);
+        foreach (self::resultadosDelBulk($resp) as $r) {
+            $idx = $r['index'];
+            $tpvId = $r['product_id'];
             if ($idx < 0 || $idx >= count($bulkPostIds) || $tpvId === 0) { continue; }
             $postId = $bulkPostIds[$idx];
             update_post_meta($postId, self::TPV_ID_META, $tpvId);
-            $action = (string) ($r['action'] ?? '');
-            if ($action === 'created')      { $stats['created']++; }
-            elseif ($action === 'updated')  { $stats['updated']++; }
+            if ($r['action'] === 'created')      { $stats['created']++; }
+            elseif ($r['action'] === 'updated')  { $stats['updated']++; }
             $stats['sent']++;
+            // El bulk de la API no lleva imágenes: se suben aparte, igual que
+            // en la ruta singular. Sin esto el volcado dejaba el TPV sin fotos.
+            $this->push_images_to_tpv($postId, wc_get_product($postId), $tpvId);
         }
         return $stats;
+    }
+
+    /**
+     * Resultados de POST /products/bulk, normalizados a
+     * [{index, product_id, action}].
+     *
+     * Desde el 03-07-2026 (api_tpv b72f13f) la API responde con el sobre
+     * uniforme BulkResult: `results[]` en la raíz y los datos de cada item en
+     * `body`. El plugin seguía leyendo `data.results[].product_id`, así que no
+     * guardaba ningún enlace `_tpv_product_id` de los productos simples: sus
+     * pedidos de Woo se saltaban por «Sin productos mapeados al TPV». Se
+     * acepta también el formato anterior para no romper con una API vieja.
+     *
+     * Un item fallido (status no 2xx) no trae product_id y queda fuera.
+     */
+    public static function resultadosDelBulk(array $resp): array
+    {
+        $crudos = $resp['results'] ?? $resp['data']['results'] ?? [];
+        $out = [];
+        foreach ((array) $crudos as $r) {
+            if (!is_array($r)) { continue; }
+            $datos = is_array($r['body'] ?? null) ? $r['body'] : $r;
+            $out[] = [
+                'index'      => (int) ($r['index'] ?? -1),
+                'product_id' => (int) ($datos['product_id'] ?? 0),
+                'action'     => (string) ($datos['action'] ?? ''),
+            ];
+        }
+        return $out;
     }
 
     /**
@@ -1019,6 +1069,14 @@ class TPV_Sync_Product_Sync
             if (!empty($options)) {
                 $payload['options'] = $options;
             }
+        } else {
+            // Stock INICIAL con cantidad: el bulk de la API solo la aplica al
+            // crear, así que relanzar el volcado no pisa lo contado en caja.
+            $payload += TPV_Sync_Stock::haciaTpv(
+                (bool) $product->get_manage_stock(),
+                $product->get_stock_quantity() !== null ? (float) $product->get_stock_quantity() : null,
+                true
+            );
         }
         return $payload;
     }
@@ -1308,6 +1366,13 @@ class TPV_Sync_Product_Sync
             }
         }
 
+        // ¿Cuenta Woo el stock? Viaja siempre (es catálogo: se puede activar o
+        // desactivar la gestión en Woo). La CANTIDAD solo en el alta, abajo.
+        $gestiona = !$product->is_type('variable') ? (bool) $product->get_manage_stock() : null;
+        if ($gestiona !== null) {
+            $payload += TPV_Sync_Stock::haciaTpv($gestiona, null, false);
+        }
+
         $tpvId = (int)get_post_meta($postId, self::TPV_ID_META, true);
 
         // Si no hay vínculo local PERO existe ya un producto en el TPV con el
@@ -1393,7 +1458,12 @@ class TPV_Sync_Product_Sync
         }
 
         // Create — la API genera product_id, lo guardamos como meta
-        $payload['quantity'] = (float)($product->get_stock_quantity() ?? 0);
+        if ($gestiona === false) {
+            // Sin gestión en Woo: el TPV no resta y no hay cantidad que dar.
+            unset($payload['quantity']);
+        } else {
+            $payload['quantity'] = (float)($product->get_stock_quantity() ?? 0);
+        }
         $r = $this->api->post('/products', $payload);
         $newId = (int)($r['data']['product_id'] ?? 0);
         if ($newId === 0) {
@@ -2513,6 +2583,16 @@ class TPV_Sync_Product_Sync
                 'sku'         => (string) ($p['sku'] ?? ''),
                 'quantity'    => (float) ($p['quantity'] ?? 0),
             ];
+
+            // Si uno de los dos lados no cuenta stock, no hay stock que
+            // reconciliar: su número es ruido (el _stock que Woo guarda de
+            // cuando gestionaba, o el 0 de un producto que el TPV no resta).
+            // Sin esto «manda Woo» copiaba un _stock huérfano al TPV, y
+            // «manda el TPV» agotaba en Woo lo que nadie contaba.
+            $wooGestiona = get_post_meta($postId, '_manage_stock', true) === 'yes';
+            if (!TPV_Sync_Stock::seCuenta($wooGestiona, $p)) {
+                $fotoWc['quantity'] = $fotoTpv['quantity'] = 0.0;
+            }
 
             $decision = TPV_Sync_Reconciler::decidir($fotoWc, $fotoTpv, $politica);
 

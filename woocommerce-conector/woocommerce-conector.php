@@ -22,6 +22,7 @@ require_once TPV_SYNC_DIR . 'includes/class-secrets.php';
 require_once TPV_SYNC_DIR . 'includes/class-circuit-breaker.php';
 require_once TPV_SYNC_DIR . 'includes/class-api-client.php';
 require_once TPV_SYNC_DIR . 'includes/class-identificadores.php';
+require_once TPV_SYNC_DIR . 'includes/class-stock.php';
 require_once TPV_SYNC_DIR . 'includes/class-precio-variantes.php';
 require_once TPV_SYNC_DIR . 'includes/class-reconciler.php';
 require_once TPV_SYNC_DIR . 'includes/class-product-sync.php';
