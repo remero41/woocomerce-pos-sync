@@ -1,4 +1,4 @@
-## Sin publicar
+## 2.7.0
 
 ### El primer volcado dejaba el TPV sin fotos, sin stock y sin enlace
 
