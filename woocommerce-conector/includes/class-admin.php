@@ -2351,17 +2351,44 @@ class TPV_Sync_Admin
 
             $('#cc-push').on('click', function() {
                 if (!confirm(<?= wp_json_encode(__('Enviar el catálogo de WooCommerce al TPV. ¿Continuar?', 'tpv-sync')) ?>)) return;
-                var $r = $('#cc-init-result').text(<?= wp_json_encode(__('Enviando…', 'tpv-sync')) ?>);
+                var $r = $('#cc-init-result').removeClass('cc-result-ok cc-result-err')
+                    .text(<?= wp_json_encode(__('Enviando…', 'tpv-sync')) ?>);
                 $('#cc-pull, #cc-push').prop('disabled', true);
-                $.post(ajaxurl, {action:'tpv_sync_push_all', nonce:nonce}, function(resp) {
-                    $('#cc-pull, #cc-push').prop('disabled', false);
-                    if (resp.success) {
+                // El servidor trabaja por lotes de 100: hay que llamar hasta
+                // que diga `done`. Antes se hacía UNA llamada y el botón
+                // enviaba solo los primeros 100 productos del catálogo.
+                var primero = true, ultimo = -1, atascado = 0;
+                function lote() {
+                    var datos = {action:'tpv_sync_push_all', nonce:nonce};
+                    if (primero) { datos.reset = 1; primero = false; }
+                    $.post(ajaxurl, datos, function(resp) {
+                        if (!resp.success) {
+                            $('#cc-pull, #cc-push').prop('disabled', false);
+                            $r.text(<?= wp_json_encode(__('Error al enviar', 'tpv-sync')) ?>).addClass('cc-result-err');
+                            return;
+                        }
                         var d = resp.data || {};
-                        $r.text((d.pushed || 0) + ' ' + <?= wp_json_encode(__('productos enviados', 'tpv-sync')) ?>).addClass('cc-result-ok');
-                    } else {
+                        if (d.done) {
+                            $('#cc-pull, #cc-push').prop('disabled', false);
+                            $r.text(d.message || '').addClass('cc-result-ok');
+                            return;
+                        }
+                        var hechos = d.processed || 0;
+                        atascado = (hechos === ultimo) ? atascado + 1 : 0;
+                        ultimo = hechos;
+                        if (atascado >= 3) {
+                            $('#cc-pull, #cc-push').prop('disabled', false);
+                            $r.text(<?= wp_json_encode(__('El envío no avanza. Revisa el Log.', 'tpv-sync')) ?>).addClass('cc-result-err');
+                            return;
+                        }
+                        $r.text(<?= wp_json_encode(__('Enviando…', 'tpv-sync')) ?> + ' ' + hechos + ' / ' + (d.total || '?'));
+                        lote();
+                    }).fail(function() {
+                        $('#cc-pull, #cc-push').prop('disabled', false);
                         $r.text(<?= wp_json_encode(__('Error al enviar', 'tpv-sync')) ?>).addClass('cc-result-err');
-                    }
-                });
+                    });
+                }
+                lote();
             });
         });
         </script>

@@ -1,3 +1,30 @@
+## Sin publicar
+
+### El primer volcado dejaba el TPV sin fotos, sin stock y sin enlace
+
+- **Los pedidos de WooCommerce no llegaban al TPV.** El volcado inicial manda
+  los productos simples en bloque, y desde julio la API contesta a ese envio
+  con otro formato. El conector no lo entendia y no guardaba el enlace entre
+  el producto de la tienda y el del TPV, asi que al vender ese producto en la
+  tienda el pedido se descartaba ("Sin productos mapeados al TPV"). Ahora se
+  guarda el enlace. Hay que volver a pulsar "Enviar a TPV" una vez para
+  recuperar el de los productos ya volcados.
+
+- **Sin imagenes.** Los productos que iban en bloque no subian sus fotos.
+
+- **Stock a 0 en el TPV.** El bloque no mandaba el stock. Ahora un producto
+  nuevo llega con el stock de la tienda, y un producto que ya existe en el
+  TPV conserva el suyo (el que se ha ido vendiendo en caja).
+
+- **Productos sin gestion de inventario que acababan "Agotado".** Si en
+  WooCommerce no llevas la cuenta de unidades ("Hay existencias"), el TPV
+  ahora tampoco la lleva para ese producto: se vende sin descontar y nunca
+  lo marca como agotado en la tienda. Antes cualquier cambio en el TPV, una
+  venta en caja o la revision semanal podian dejarlo "Agotado" online.
+
+- **"Enviar a TPV" solo enviaba los primeros 100 productos.** Ahora recorre
+  el catalogo entero y enseña el avance.
+
 ## 2.6.0
 
 ### El catalogo llegaba al TPV con precios a cero y codigos inventados
