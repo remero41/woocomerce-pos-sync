@@ -1963,6 +1963,40 @@ class TPV_Sync_Product_Sync
     }
 
     /**
+     * Motivo legible de una suboperacion fallida del /batch, para el registro.
+     * Funcion pura.
+     *
+     * Sin esto el registro decia «Imagen no subida (status=401)» y el motivo
+     * que la API SI devolvia (signature_invalid, «Host not in allowed_domain»,
+     * «Could not download image (HTTP 404)»...) se perdia.
+     *
+     * Acepta las dos formas que devuelve la API: el envoltorio estandar
+     * {"errors":[{error, message, field}]} y el error propio del batch
+     * {error, message}. Recortado: va a una columna de log.
+     */
+    public static function motivoDelFallo(array $r): string
+    {
+        $err = $r['error'] ?? null;
+        if (is_string($err)) {
+            return substr($err, 0, 300);
+        }
+        if (!is_array($err)) {
+            return '';
+        }
+        $lista = array_key_exists('errors', $err) ? $err['errors'] : [$err];
+        if (!is_array($lista)) {
+            return '';
+        }
+        $partes = [];
+        foreach ($lista as $e) {
+            $quien = (string) ($e['field'] ?? $e['error'] ?? '');
+            $que   = (string) ($e['message'] ?? '');
+            $partes[] = $quien !== '' && $que !== '' ? "$quien: $que" : $quien . $que;
+        }
+        return substr(implode('; ', array_filter($partes, 'strlen')), 0, 300);
+    }
+
+    /**
      * Sube las imagenes de un producto al TPV via POST /products/{id}/images
      * con `image_url`; la API descarga el archivo (validando dominio).
      *
@@ -2020,8 +2054,10 @@ class TPV_Sync_Product_Sync
             if ($status >= 200 && $status < 300) {
                 $sent[$url] = (string) ($r['body']['data']['image'] ?? '1');
             } else {
+                $motivo = self::motivoDelFallo($r);
                 $this->log('warn', $tpvId,
-                    "Imagen no subida (post=$postId status=$status): " . substr($url, 0, 120));
+                    "Imagen no subida (post=$postId status=$status"
+                    . ($motivo !== '' ? " — $motivo" : '') . "): " . substr($url, 0, 120));
             }
         }
 
