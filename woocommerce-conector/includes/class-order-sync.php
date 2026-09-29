@@ -14,8 +14,12 @@ defined('ABSPATH') || exit;
 class TPV_Sync_Order_Sync
 {
     private TPV_Sync_API_Client $api;
+    private TPV_Sync_Product_Sync $products;
 
     const TPV_ORDER_META = '_tpv_order_id';
+
+    /** Pedido retenido: alguna línea no tiene gemelo en el TPV. JSON {desde, faltan}. */
+    const PENDIENTE_META = '_tpv_order_pendiente';
 
     // Mapa WC status → TPV order_status_id
     // Los IDs corresponden a la tabla 2465_order_status
@@ -40,9 +44,15 @@ class TPV_Sync_Order_Sync
         14 => 'cancelled',  // Expirado → cancelado
     ];
 
-    public function __construct(TPV_Sync_API_Client $api)
+    /**
+     * $products es obligatorio: sin él una línea sin enlace no se puede
+     * asegurar en el TPV, y un Order_Sync «a medias» (el botón de reintentar
+     * del admin construía uno así) retendría pedidos que sí se pueden enviar.
+     */
+    public function __construct(TPV_Sync_API_Client $api, TPV_Sync_Product_Sync $products)
     {
-        $this->api = $api;
+        $this->api      = $api;
+        $this->products = $products;
     }
 
     /**
@@ -101,10 +111,17 @@ class TPV_Sync_Order_Sync
         // Importante: get_total() de WC devuelve NETO aunque la tienda tenga
         // "Prices entered with tax = yes" — WC internamente desglosa al guardar
         // el pedido. No depende de display settings.
+        // Una línea sin enlace ya NO se descarta (llegaba al TPV un pedido a
+        // medias, o ninguno): se asegura su producto en el TPV en el momento.
+        // Si alguna sigue sin gemelo, el pedido entero se retiene.
         $products = [];
+        $faltan   = [];
         foreach ($order->get_items() as $item) {
-            $tpvId = get_post_meta($item->get_product_id(), TPV_Sync_Product_Sync::TPV_ID_META, true);
-            if (!$tpvId) continue;
+            $tpvId = $this->products->asegurarEnTpv((int) $item->get_product_id());
+            if (!$tpvId) {
+                $faltan[] = $item->get_name() . ' (#' . (int) $item->get_product_id() . ')';
+                continue;
+            }
 
             $qty         = (float)$item->get_quantity();
             $lineNetTot  = (float)$item->get_total();       // neto línea
@@ -130,8 +147,14 @@ class TPV_Sync_Order_Sync
             ];
         }
 
+        if (!empty($faltan)) {
+            $this->retener($order, $faltan);
+            return;
+        }
         if (empty($products)) {
-            $this->log($wcOrderId, 'skip', 'Sin productos mapeados al TPV');
+            // Sin líneas de producto (solo cargos, por ejemplo): no hay venta
+            // que registrar. Retenerlo lo reintentaría para siempre.
+            $this->log($wcOrderId, 'skip', 'Pedido sin líneas de producto');
             return;
         }
 
@@ -199,6 +222,7 @@ class TPV_Sync_Order_Sync
         if (!empty($result['data']['order_id'])) {
             $tpvOrderId = (int)$result['data']['order_id'];
             update_post_meta($wcOrderId, self::TPV_ORDER_META, $tpvOrderId);
+            delete_post_meta($wcOrderId, self::PENDIENTE_META);
             $order->add_order_note("Registrado en TPV (#{$tpvOrderId}).");
             $this->log($wcOrderId, 'ok', "Creado en TPV order_id={$tpvOrderId}");
         } else {
@@ -228,6 +252,59 @@ class TPV_Sync_Order_Sync
                 }
             }
         }
+    }
+
+    /**
+     * Retiene un pedido que no puede llegar entero al TPV. Nunca a medias: se
+     * guarda como pendiente y lo reintenta reintentarPendientes(). La nota va
+     * UNA vez (el primer intento), para que la comerciante lo vea sin que cada
+     * reintento le llene el pedido.
+     */
+    private function retener($order, array $faltan): void
+    {
+        $wcOrderId = (int) $order->get_id();
+        $lista     = implode(', ', $faltan);
+        if ((string) get_post_meta($wcOrderId, self::PENDIENTE_META, true) === '') {
+            $order->add_order_note(
+                "Pendiente de enviar al TPV: no se pudo dar de alta en el TPV: {$lista}. "
+                . 'Se reintentará solo en cuanto se pueda; no llegará incompleto.'
+            );
+        }
+        update_post_meta($wcOrderId, self::PENDIENTE_META,
+            wp_json_encode(['desde' => gmdate('c'), 'faltan' => $faltan]));
+        $this->log($wcOrderId, 'pendiente', "Retenido: {$lista}");
+    }
+
+    /**
+     * Reintenta los pedidos retenidos, por tandas y con cursor (los que siguen
+     * atascados no tapan a los de detrás). Lo llama el cron
+     * `tpv_sync_pedidos_pendientes` cada 5 minutos. No va por la cola: la cola
+     * abandona a las ~29 h y un producto puede tardar más en arreglarse.
+     */
+    public function reintentarPendientes(int $lote = 10): array
+    {
+        global $wpdb;
+        $stats  = ['revisados' => 0, 'enviados' => 0];
+        $cursor = (int) get_option('tpv_sync_pedidos_cursor', 0);
+        $ids = array_map('intval', (array) $wpdb->get_col($wpdb->prepare(
+            "SELECT post_id FROM {$wpdb->postmeta}
+             WHERE meta_key = '" . self::PENDIENTE_META . "' AND post_id > %d
+             ORDER BY post_id ASC LIMIT %d",
+            $cursor, $lote
+        )));
+        if (empty($ids)) {
+            update_option('tpv_sync_pedidos_cursor', 0, false);
+            return $stats;
+        }
+        foreach ($ids as $wcOrderId) {
+            $stats['revisados']++;
+            $this->send_to_tpv($wcOrderId);
+            if (get_post_meta($wcOrderId, self::TPV_ORDER_META, true)) {
+                $stats['enviados']++;
+            }
+        }
+        update_option('tpv_sync_pedidos_cursor', end($ids), false);
+        return $stats;
     }
 
     // ─── WC → TPV: cambio de estado ───────────────────────────────────────────

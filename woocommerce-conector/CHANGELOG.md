@@ -1,3 +1,24 @@
+## Sin publicar
+
+### Un pedido de la tienda ya nunca llega a medias al TPV
+
+- **Pedidos incompletos o perdidos.** Si un producto del pedido no estaba
+  enlazado con el TPV, esa linea se quitaba sin avisar: el pedido llegaba al
+  TPV sin ella (con el total y el stock mal) o, si no quedaba ninguna, no
+  llegaba nunca ("Sin productos mapeados al TPV"). Ahora el conector enlaza o
+  da de alta ese producto en el TPV en el momento y el pedido llega entero.
+  Si el TPV no lo acepta (por ejemplo, un precio negativo), el pedido queda
+  retenido con una nota que dice que producto falta, y se envia solo en cuanto
+  se pueda.
+
+- **Todo lo que vendes online existe en el TPV.** Con el catalogo mandado por
+  el TPV, un producto creado solo en la tienda antes se ignoraba; ahora se da
+  de alta tambien en el TPV (a partir de ahi manda el TPV sobre el).
+
+- **Reintentos que se multiplicaban.** Cuando un envio de pedido o de
+  reembolso fallaba y se reintentaba, cada intento creaba otro en la cola.
+  Ahora hay uno solo, que cuenta sus intentos.
+
 ## 2.8.0
 
 ### El catalogo se repara solo
