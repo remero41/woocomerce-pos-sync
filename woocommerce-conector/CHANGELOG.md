@@ -1,3 +1,22 @@
+## Sin publicar
+
+### El catalogo se repara solo
+
+- **Enlaces e imagenes que faltan, sin tocar nada.** Hasta ahora, si un
+  volcado o una subida de fotos fallaba, el producto se quedaba asi hasta que
+  alguien volviera a guardarlo en WooCommerce, o pulsara "Enviar a TPV". Ahora
+  el conector repasa el catalogo solo, cada 5 minutos y por tandas: enlaza con
+  su producto del TPV los que perdieron el enlace (sin eso sus pedidos no
+  llegan al TPV) y sube las fotos que no llegaron. Solo enlaza: no crea ni
+  sobrescribe productos en ningun lado. Si el catalogo lo manda el TPV, las
+  fotos no se empujan (van del TPV a la tienda).
+
+- **Al guardar un producto sin enlace, se reconoce aunque cambiara el SKU.**
+  El TPV recuerda que producto de la tienda es cada uno; antes solo se buscaba
+  por SKU y, si habia cambiado, se daba de alta otro producto repetido.
+
+- **El registro dice por que no subio una imagen**, no solo el codigo de error.
+
 ## 2.7.0
 
 ### El primer volcado dejaba el TPV sin fotos, sin stock y sin enlace

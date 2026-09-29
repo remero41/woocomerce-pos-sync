@@ -223,6 +223,18 @@ add_action('tpv_sync_reconcile', function () {
     }
 });
 
+// ─── Cron de autocuración: enlaces e imágenes que faltan, cada 5 min ─────────
+//
+// Red de seguridad del catálogo: enlaza por external_id/model/sku los
+// productos sin `_tpv_product_id` y sube las imágenes que no llegaron. Sin
+// esto, un volcado fallido se quedaba así hasta volver a guardar cada
+// producto en Woo (ver TPV_Sync_Product_Sync::autocurar).
+
+add_action('tpv_sync_autocurar', function () {
+    if (!class_exists('TPV_Sync')) return;
+    TPV_Sync::instance()->products->autocurar();
+});
+
 // ─── Cron de fallback queue: procesa pending cada minuto ─────────────────────
 
 add_action('tpv_sync_queue_process', function () {
@@ -245,6 +257,9 @@ add_filter('cron_schedules', function ($schedules) {
     if (!isset($schedules['every_minute'])) {
         $schedules['every_minute'] = ['interval' => 60, 'display' => 'Cada minuto'];
     }
+    if (!isset($schedules['tpv_sync_cada_5_min'])) {
+        $schedules['tpv_sync_cada_5_min'] = ['interval' => 300, 'display' => 'Cada 5 minutos'];
+    }
     return $schedules;
 });
 
@@ -254,6 +269,9 @@ add_action('plugins_loaded', function () {
     }
     if (!wp_next_scheduled('tpv_sync_queue_process')) {
         wp_schedule_event(time() + 60, 'every_minute', 'tpv_sync_queue_process');
+    }
+    if (!wp_next_scheduled('tpv_sync_autocurar')) {
+        wp_schedule_event(time() + 120, 'tpv_sync_cada_5_min', 'tpv_sync_autocurar');
     }
     if (!wp_next_scheduled('tpv_sync_queue_purge')) {
         wp_schedule_event(time() + DAY_IN_SECONDS, 'daily', 'tpv_sync_queue_purge');
@@ -329,6 +347,7 @@ register_deactivation_hook(__FILE__, function () {
     }
     wp_clear_scheduled_hook('tpv_sync_reconcile');
     wp_clear_scheduled_hook('tpv_sync_queue_process');
+    wp_clear_scheduled_hook('tpv_sync_autocurar');
     wp_clear_scheduled_hook('tpv_sync_queue_purge');
     wp_clear_scheduled_hook('tpv_sync_notifications_eval');
     flush_rewrite_rules();
