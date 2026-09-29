@@ -1200,7 +1200,7 @@ class TPV_Sync_Product_Sync
     {
         if ($this->tpvCatalogIndexLoaded) return $this->tpvCatalogIndex;
         $this->tpvCatalogIndexLoaded = true;
-        $this->tpvCatalogIndex = ['by_model' => [], 'by_sku' => []];
+        $this->tpvCatalogIndex = ['by_external' => [], 'by_model' => [], 'by_sku' => []];
 
         try {
             $cursor = null;
@@ -1214,6 +1214,12 @@ class TPV_Sync_Product_Sync
                     if ($tid <= 0) continue;
                     $m = (string) ($row['model'] ?? '');
                     $s = (string) ($row['sku'] ?? '');
+                    // external_id: el post de Woo que el TPV registró al recibir
+                    // el producto (llega por X-Channel). Es la pareja exacta.
+                    $e = (string) ($row['external_id'] ?? '');
+                    if ($e !== '' && !isset($this->tpvCatalogIndex['by_external'][$e])) {
+                        $this->tpvCatalogIndex['by_external'][$e] = $tid;
+                    }
                     if ($m !== '' && !isset($this->tpvCatalogIndex['by_model'][$m])) {
                         $this->tpvCatalogIndex['by_model'][$m] = $tid;
                     }
@@ -1228,6 +1234,157 @@ class TPV_Sync_Product_Sync
             $this->log('error', 0, 'precarga TPV catalog: ' . $e->getMessage());
         }
         return $this->tpvCatalogIndex;
+    }
+
+    /**
+     * Qué producto del TPV es la pareja de un post de Woo sin enlace. Regla
+     * ÚNICA: la usan el guardado de un producto y la autocuración.
+     *
+     * Candidatos, de más a menos fiable: el `external_id` que el TPV registró
+     * para este post (exacto aunque el SKU haya cambiado), el `model` y el
+     * `sku`. Un candidato ya enlazado a OTRO post se descarta: dos posts
+     * enlazados al mismo producto mezclarían pedidos y stock.
+     *
+     * @param array    $indice    getTpvCatalogIndex(): by_external / by_model / by_sku
+     * @param callable $enlazadoA tpvId => post que ya lo tiene (0 si ninguno)
+     * @return int tpvId, o 0 si no hay pareja libre
+     */
+    public static function resolverEnlace(int $postId, string $model, string $sku,
+                                          array $indice, callable $enlazadoA): int
+    {
+        $candidatos = [
+            (int) ($indice['by_external'][(string) $postId] ?? 0),
+            $model !== '' ? (int) ($indice['by_model'][$model] ?? 0) : 0,
+            $sku !== ''   ? (int) ($indice['by_sku'][$sku] ?? 0) : 0,
+        ];
+        foreach ($candidatos as $tpvId) {
+            if ($tpvId <= 0) {
+                continue;
+            }
+            $dueno = (int) $enlazadoA($tpvId);
+            if ($dueno === 0 || $dueno === $postId) {
+                return $tpvId;
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * Autocuración del catálogo: la red de seguridad que faltaba.
+     *
+     * Recorre los productos de Woo por tandas (cursor por ID, los mismos
+     * estados que el volcado) y, por producto:
+     *   1. sin enlace -> resolverEnlace() y SOLO enlaza: no da de alta ni
+     *      sobrescribe nada en ninguno de los dos lados;
+     *   2. con enlace -> sube las imágenes que falten (push_images_to_tpv
+     *      salta las ya enviadas, y reintenta las que fallaron).
+     *
+     * Sin esto, un volcado o una subida fallida se quedaban así hasta que
+     * alguien volviera a guardar CADA producto en Woo (lulubeauty, 29-09-2026:
+     * 917 productos sin foto y los simples sin enlace, con lo que sus pedidos
+     * de Woo se descartaban).
+     *
+     * Las imágenes solo se empujan si el catálogo lo manda Woo: si manda el
+     * TPV, viajan del TPV a Woo y empujarlas de vuelta haría eco.
+     *
+     * Candado: WP-Cron puede lanzar dos pasadas a la vez y ambas subirían las
+     * mismas imágenes. Un candado de más de 10 min es de un proceso muerto.
+     * Presupuesto de tiempo: el hosting corta procesos largos; al agotarse se
+     * guarda el cursor y la siguiente pasada sigue. Siempre procesa al menos
+     * un producto, para avanzar aunque uno solo tarde más que el presupuesto.
+     */
+    public function autocurar(int $lote = 25, float $presupuestoSeg = 20.0): array
+    {
+        $stats = ['revisados' => 0, 'enlazados' => 0, 'sin_pareja' => 0,
+                  'con_imagenes' => 0, 'vuelta_completa' => false, 'ocupado' => false];
+
+        if (!tpv_sync_module_catalog() || !$this->api->isConfigured()) {
+            return $stats;
+        }
+
+        $candado = 'tpv_sync_autocura_candado';
+        if (!add_option($candado, (string) time(), '', 'no')) {
+            if (time() - (int) get_option($candado, 0) < 600) {
+                $stats['ocupado'] = true;
+                return $stats;
+            }
+            update_option($candado, (string) time(), false);
+        }
+
+        try {
+            global $wpdb;
+            $inicio = microtime(true);
+            $cursor = (int) get_option('tpv_sync_autocura_cursor', 0);
+            $ids = array_map('intval', (array) $wpdb->get_col($wpdb->prepare(
+                "SELECT ID FROM {$wpdb->posts}
+                 WHERE post_type = 'product' AND post_status IN ('publish','draft') AND ID > %d
+                 ORDER BY ID ASC LIMIT %d",
+                $cursor, $lote
+            )));
+
+            if (empty($ids)) {
+                update_option('tpv_sync_autocura_cursor', 0, false);
+                $stats['vuelta_completa'] = true;
+                return $stats;
+            }
+
+            $imagenes = get_option('tpv_sync_principal', '') !== 'tpv';
+            $indice   = null;   // el catálogo del TPV solo se pide si hace falta
+            $duenos   = null;   // tpvId => postId de los enlaces ya hechos
+
+            foreach ($ids as $postId) {
+                if ($stats['revisados'] > 0 && microtime(true) - $inicio > $presupuestoSeg) {
+                    break;
+                }
+                $stats['revisados']++;
+                $cursor = $postId;
+
+                $tpvId = (int) get_post_meta($postId, self::TPV_ID_META, true);
+                $product = function_exists('wc_get_product') ? wc_get_product($postId) : null;
+
+                if ($tpvId <= 0) {
+                    if ($indice === null) {
+                        $indice = $this->getTpvCatalogIndex();
+                        $duenos = [];
+                        foreach ((array) $wpdb->get_results(
+                            "SELECT post_id, meta_value FROM {$wpdb->postmeta}
+                             WHERE meta_key = '" . self::TPV_ID_META . "' AND meta_value <> ''",
+                            ARRAY_A
+                        ) as $fila) {
+                            $duenos[(int) $fila['meta_value']] = (int) $fila['post_id'];
+                        }
+                    }
+                    $ids2 = TPV_Sync_Identificadores::paraProducto(
+                        (string) get_post_meta($postId, '_global_unique_id', true),
+                        $product ? (string) $product->get_sku() : '',
+                        $postId
+                    );
+                    $tpvId = self::resolverEnlace($postId, $ids2['model'], $ids2['sku'], $indice,
+                        fn (int $tid): int => $duenos[$tid] ?? 0);
+                    if ($tpvId <= 0) {
+                        $stats['sin_pareja']++;
+                        continue;
+                    }
+                    update_post_meta($postId, self::TPV_ID_META, $tpvId);
+                    $duenos[$tpvId] = $postId;
+                    $stats['enlazados']++;
+                    $this->log('ok', $tpvId, "Autocurado: enlace post=$postId ↔ TPV id=$tpvId");
+                }
+
+                if ($imagenes && $product) {
+                    $antes = get_post_meta($postId, '_tpv_images_sent', true);
+                    $this->push_images_to_tpv($postId, $product, $tpvId);
+                    if (get_post_meta($postId, '_tpv_images_sent', true) !== $antes) {
+                        $stats['con_imagenes']++;
+                    }
+                }
+            }
+
+            update_option('tpv_sync_autocura_cursor', $cursor, false);
+            return $stats;
+        } finally {
+            delete_option($candado);
+        }
     }
 
     /**
@@ -1385,7 +1542,8 @@ class TPV_Sync_Product_Sync
             // de un GET /products?search=$needle por cada producto sin map.
             // Para 4000 productos sin mapping, eso reduce de 4000 RTTs a 0.
             $catalog = $this->getTpvCatalogIndex();
-            $found = $catalog['by_model'][$model] ?? $catalog['by_sku'][$skuForTpv] ?? 0;
+            $found = self::resolverEnlace($postId, $model, $skuForTpv, $catalog,
+                fn (int $tid): int => $this->find_wc_post($tid));
             if ($found > 0) {
                 $tpvId = (int) $found;
                 update_post_meta($postId, self::TPV_ID_META, $tpvId);

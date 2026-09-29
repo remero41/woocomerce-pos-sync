@@ -223,15 +223,16 @@ function run_sku_mapeo_tests(WooTestRunner $t): void
     // ── Que el fix este ENCHUFADO, no solo escrito ──────────────────────
     $t->suite('SKU: la regla esta enchufada al push');
 
-    $t->test('las dos rutas de push usan la MISMA funcion de identificadores', function ($t) {
+    $t->test('todas las rutas usan la MISMA funcion de identificadores', function ($t) {
         $src = (string) file_get_contents(dirname(__DIR__) . '/includes/class-product-sync.php');
 
         // La logica estaba copiada en dos sitios (push normal :1229 y bulk
         // :955). Arreglar solo una deja el bug vivo segun por donde entre el
-        // producto — este plugin ya se rompio asi antes.
+        // producto — este plugin ya se rompio asi antes. La autocuracion
+        // (29-09-2026) es la tercera: busca la pareja con el mismo model.
         $usos = preg_match_all('/TPV_Sync_Identificadores::paraProducto\s*\(/', $src);
-        $t->assertEquals(2, $usos,
-            'las dos rutas de push deben mapear los identificadores igual');
+        $t->assertEquals(3, $usos,
+            'push, bulk y autocuracion deben mapear los identificadores igual');
     });
 
     $t->test('ya no queda el fallback __WC__ escrito a mano en el push', function ($t) {

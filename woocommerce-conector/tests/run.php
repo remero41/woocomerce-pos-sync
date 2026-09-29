@@ -128,6 +128,8 @@ require_once __DIR__ . '/test_panel_reconciliar.php';
 require_once __DIR__ . '/test_stock_gestion.php';
 require_once __DIR__ . '/test_volcado_bulk.php';
 require_once __DIR__ . '/test_stock_tpv_a_woo.php';
+require_once __DIR__ . '/test_autocuracion.php';
+require_once __DIR__ . '/test_cron_cableado.php';
 require_once dirname(__DIR__) . '/includes/class-order-sync.php';
 require_once dirname(__DIR__) . '/includes/class-admin.php';
 
@@ -160,6 +162,8 @@ run_reconcile_enganchado_tests($t);
 run_panel_reconciliar_tests($t);
 run_stock_gestion_tests($t);
 run_volcado_bulk_tests($t);
+run_autocuracion_tests($t);
+run_cron_cableado_tests($t);
 run_stock_tpv_a_woo_tests($t);
 
 exit($t->summary());
