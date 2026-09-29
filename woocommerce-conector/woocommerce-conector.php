@@ -99,7 +99,7 @@ class TPV_Sync
     {
         $this->api       = new TPV_Sync_API_Client();
         $this->products  = new TPV_Sync_Product_Sync($this->api);
-        $this->orders    = new TPV_Sync_Order_Sync($this->api);
+        $this->orders    = new TPV_Sync_Order_Sync($this->api, $this->products);
         $this->customers = new TPV_Sync_Customer_Sync($this->api);
         $this->webhooks  = new TPV_Sync_Webhook($this->products, $this->orders, $this->api);
         $this->queue     = new TPV_Sync_Queue($this->api, $this->products, $this->orders);
@@ -235,6 +235,17 @@ add_action('tpv_sync_autocurar', function () {
     TPV_Sync::instance()->products->autocurar();
 });
 
+// ─── Cron de pedidos retenidos: reintento cada 5 min ─────────────────────────
+//
+// Un pedido con un producto que el TPV no pudo dar de alta no se manda a
+// medias: se retiene y se reintenta aquí hasta que salga entero (ver
+// TPV_Sync_Order_Sync::reintentarPendientes).
+
+add_action('tpv_sync_pedidos_pendientes', function () {
+    if (!class_exists('TPV_Sync')) return;
+    TPV_Sync::instance()->orders->reintentarPendientes();
+});
+
 // ─── Cron de fallback queue: procesa pending cada minuto ─────────────────────
 
 add_action('tpv_sync_queue_process', function () {
@@ -272,6 +283,9 @@ add_action('plugins_loaded', function () {
     }
     if (!wp_next_scheduled('tpv_sync_autocurar')) {
         wp_schedule_event(time() + 120, 'tpv_sync_cada_5_min', 'tpv_sync_autocurar');
+    }
+    if (!wp_next_scheduled('tpv_sync_pedidos_pendientes')) {
+        wp_schedule_event(time() + 180, 'tpv_sync_cada_5_min', 'tpv_sync_pedidos_pendientes');
     }
     if (!wp_next_scheduled('tpv_sync_queue_purge')) {
         wp_schedule_event(time() + DAY_IN_SECONDS, 'daily', 'tpv_sync_queue_purge');
@@ -348,6 +362,7 @@ register_deactivation_hook(__FILE__, function () {
     wp_clear_scheduled_hook('tpv_sync_reconcile');
     wp_clear_scheduled_hook('tpv_sync_queue_process');
     wp_clear_scheduled_hook('tpv_sync_autocurar');
+    wp_clear_scheduled_hook('tpv_sync_pedidos_pendientes');
     wp_clear_scheduled_hook('tpv_sync_queue_purge');
     wp_clear_scheduled_hook('tpv_sync_notifications_eval');
     flush_rewrite_rules();

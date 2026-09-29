@@ -85,9 +85,20 @@ class TPV_Sync_Queue
     public function enqueue(string $operation, array $payload, string $reason = ''): int
     {
         global $wpdb;
+        // Lo mismo ya pendiente -> esa fila. Sin esto, cada reintento fallido
+        // de order.send/refund.send (que vuelven a encolar al fallar) creaba
+        // otra fila con attempts=0: la cola se multiplicaba y nunca abandonaba.
+        $json = wp_json_encode($payload);
+        $existente = (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT id FROM " . self::table_name() . " WHERE status = %s AND operation = %s AND payload = %s LIMIT 1",
+            self::STATUS_PENDING, $operation, $json
+        ));
+        if ($existente > 0) {
+            return $existente;
+        }
         $wpdb->insert(self::table_name(), [
             'operation'     => $operation,
-            'payload'       => wp_json_encode($payload),
+            'payload'       => $json,
             'attempts'      => 0,
             'next_retry_at' => current_time('mysql', true),
             'last_error'    => $reason,

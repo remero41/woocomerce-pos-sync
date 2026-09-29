@@ -229,10 +229,11 @@ function run_sku_mapeo_tests(WooTestRunner $t): void
         // La logica estaba copiada en dos sitios (push normal :1229 y bulk
         // :955). Arreglar solo una deja el bug vivo segun por donde entre el
         // producto — este plugin ya se rompio asi antes. La autocuracion
-        // (29-09-2026) es la tercera: busca la pareja con el mismo model.
+        // (29-09-2026) es la tercera y asegurarEnTpv (pedidos, 30-09) la
+        // cuarta: las dos buscan la pareja con el mismo model.
         $usos = preg_match_all('/TPV_Sync_Identificadores::paraProducto\s*\(/', $src);
-        $t->assertEquals(3, $usos,
-            'push, bulk y autocuracion deben mapear los identificadores igual');
+        $t->assertEquals(4, $usos,
+            'push, bulk, autocuracion y asegurarEnTpv deben mapear los identificadores igual');
     });
 
     $t->test('ya no queda el fallback __WC__ escrito a mano en el push', function ($t) {

@@ -2646,9 +2646,10 @@ class TPV_Sync_Admin
         global $wpdb;
         $t = TPV_Sync_Webhook::dlq_table_name();
         $api = new TPV_Sync_API_Client();
+        $productos = new TPV_Sync_Product_Sync($api);
         $webhook = new TPV_Sync_Webhook(
-            new TPV_Sync_Product_Sync($api),
-            new TPV_Sync_Order_Sync($api),
+            $productos,
+            new TPV_Sync_Order_Sync($api, $productos),
             $api
         );
 
@@ -2771,10 +2772,11 @@ class TPV_Sync_Admin
         global $wpdb;
         $t   = $wpdb->prefix . 'tpv_sync_queue';
         $api = new TPV_Sync_API_Client();
+        $productos = new TPV_Sync_Product_Sync($api);
         $queue = new TPV_Sync_Queue(
             $api,
-            new TPV_Sync_Product_Sync($api),
-            new TPV_Sync_Order_Sync($api)
+            $productos,
+            new TPV_Sync_Order_Sync($api, $productos)
         );
 
         if (isset($_POST['tpv_queue_action']) && wp_verify_nonce((string)$_POST['tpv_sync_queue_nonce'] ?? '', 'tpv_sync_queue')) {

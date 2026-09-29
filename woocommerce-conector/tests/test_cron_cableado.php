@@ -33,6 +33,11 @@ function run_cron_cableado_tests(WooTestRunner $t): void
         $t->assertEquals('tpv_sync_cada_5_min', $r['programados']['tpv_sync_autocurar'] ?? null);
     });
 
+    $t->test('los pedidos retenidos se reintentan cada 5 minutos', function ($t) use ($r) {
+        $t->assertEquals('tpv_sync_cada_5_min', $r['programados']['tpv_sync_pedidos_pendientes'] ?? null,
+            'un pedido retenido que nadie reintenta es un pedido perdido');
+    });
+
     $t->test('todo evento programado tiene su add_action', function ($t) use ($r) {
         $huerfanos = array_diff(array_keys($r['programados']), $r['acciones']);
         $t->assertEquals([], array_values($huerfanos), 'programado y sin nadie que lo ejecute');

@@ -1388,14 +1388,58 @@ class TPV_Sync_Product_Sync
     }
 
     /**
+     * Garantiza que un producto de Woo tenga su gemelo en el TPV y devuelve su
+     * id (0 si no se pudo). Principio del usuario (30-09-2026): TODO lo que se
+     * vende en la tienda existe en el TPV, en cualquier modo; «quién manda»
+     * solo decide quién gana cuando los dos lados discrepan.
+     *
+     * 1. ya enlazado -> su id;
+     * 2. el TPV ya lo tiene (resolverEnlace) -> SOLO se enlaza: sin PATCH,
+     *    que con el catálogo mandado por el TPV lo sobrescribiría;
+     * 3. no existe -> se da de alta con el mismo alta que el guardado.
+     *
+     * Lo usan el envío de pedidos (una línea sin enlace ya no se descarta) y
+     * el guardado de una «isla» con el catálogo mandado por el TPV.
+     */
+    public function asegurarEnTpv(int $postId): int
+    {
+        $tpvId = (int) get_post_meta($postId, self::TPV_ID_META, true);
+        if ($tpvId > 0) {
+            return $tpvId;
+        }
+        $product = function_exists('wc_get_product') ? wc_get_product($postId) : null;
+        if (!$product || $product->is_type('variation')) {
+            return 0;
+        }
+        $ids = TPV_Sync_Identificadores::paraProducto(
+            (string) get_post_meta($postId, '_global_unique_id', true),
+            (string) $product->get_sku(),
+            $postId
+        );
+        $tpvId = self::resolverEnlace($postId, $ids['model'], $ids['sku'], $this->getTpvCatalogIndex(),
+            fn (int $tid): int => $this->find_wc_post($tid));
+        if ($tpvId > 0) {
+            update_post_meta($postId, self::TPV_ID_META, $tpvId);
+            $this->log('ok', $tpvId, "Enlazado al asegurar post=$postId ↔ TPV id=$tpvId");
+            return $tpvId;
+        }
+        $this->push_wc_product_to_tpv($postId, true);
+        return (int) get_post_meta($postId, self::TPV_ID_META, true);
+    }
+
+    /**
      * Empuja un producto WC al TPV (create o update según tenga meta _tpv_product_id).
      *
      * Devuelve true si el producto llegó al TPV (201/200), false en cualquier
      * fallo (validación, rate limit, emoji-utf8mb3, HTTP error, post no válido).
      * Los hooks de WP ignoran el retorno — lo usa el bulk push de la UI admin
      * para reportar contadores reales en vez de "0 errors" engañosos.
+     *
+     * @param bool $forzarAlta solo para asegurarEnTpv(): da de alta aunque el
+     *                         catálogo lo mande el TPV (el producto no existe
+     *                         allí, así que no hay nada que revertir).
      */
-    public function push_wc_product_to_tpv($productOrId): bool
+    public function push_wc_product_to_tpv($productOrId, bool $forzarAlta = false): bool
     {
         if (!empty($GLOBALS['tpv_sync_skip_wc_product_push'])) return false;
 
@@ -1410,11 +1454,12 @@ class TPV_Sync_Product_Sync
         // El stock es bidireccional siempre — pero el stock no pasa por aquí
         // (lo gestiona push_wc_stock_change).
         $principal = (string) get_option('tpv_sync_principal', '');
-        if ($principal === 'tpv') {
+        if ($principal === 'tpv' && !$forzarAlta) {
             $tpvId = (int) get_post_meta($postId, self::TPV_ID_META, true);
             if ($tpvId === 0) {
-                // Isla en WC: cambio local, no se propaga.
-                return false;
+                // Isla en WC: antes se ignoraba y un pedido con ella llegaba
+                // al TPV a medias. Todo lo vendible existe en el TPV.
+                return $this->asegurarEnTpv($postId) > 0;
             }
             // Producto sincronizado: revertimos al estado del TPV.
             $GLOBALS['tpv_sync_skip_wc_product_push'] = true;
