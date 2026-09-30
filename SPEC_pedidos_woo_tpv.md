@@ -141,6 +141,7 @@ Mutantes mínimos: uno por fila de la tabla. Criterio de cierre: la suite entera
 
 ### Hallazgos al margen (sin tocar)
 
+- ✅ **RESUELTO (30-09, rama `fix/sin-gestion-pedidos-tpv`)**: quitados el interruptor, la suscripción a `order.*`/`return.*`, `update_wc_status`, `handle_return` y las guardas de bucle que solo servían para eso. El receptor ignora (y registra) esos eventos para las tiendas suscritas antes. Woo→TPV intacto.
 - **El interruptor «Pedidos» del panel miente**: dice «Se crean en el TPV cuando se pagan», pero los pedidos se envían siempre. Solo controla la suscripción a `order.status_changed` (TPV→Woo), que es la mitad muerta a retirar. Propuesta: quitarlo junto con esa mitad.
 - **Evento `order.created` duplicado**: la API emite el suyo y el bridge del conector del TPV (`plugin_wordpress_connector`) emite otro en `on_order_complete`. El plugin de Woo solo lo registra: es ruido, no un fallo.
 - **PrestaShop** (`prestashop-pos-sync`): mismo P9 (`return_status_id` = 1): arreglado con su test en el worktree `fix/devolucion-status-api`, sin commit. Siguen en PrestaShop P5 (reenvío completo), P7 (clave por producto), la línea sin enlace dada por buena y P1/P2 de pedidos: llevar F1–F4 allí es otro trabajo.

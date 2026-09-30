@@ -53,7 +53,6 @@ class TPV_Sync_CLI
             ['metric' => 'api_configured',  'value' => $sync->api->isConfigured() ? 'yes' : 'no'],
             ['metric' => 'webhook_id',      'value' => (string)(get_option('tpv_sync_webhook_id') ?: 'not-registered')],
             ['metric' => 'module_catalog',  'value' => get_option('tpv_sync_module_catalog', 1) ? 'on' : 'off'],
-            ['metric' => 'module_orders',   'value' => get_option('tpv_sync_module_orders',  0) ? 'on' : 'off'],
         ];
         $qs = $sync->queue->stats();
         foreach (['pending', 'done', 'abandoned', 'total'] as $k) {

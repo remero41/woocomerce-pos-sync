@@ -28,6 +28,13 @@
   descarto por no tener sus productos enlazados se envian ahora solos, una vez.
   Llevan una nota «Recuperado» que lo explica.
 
+- **Los pedidos se gestionan en la tienda, no en el TPV.** El interruptor
+  «Pedidos» del panel decia que controlaba el envio de pedidos, y no era
+  verdad: se envian siempre. Lo que hacia era dejar que el TPV cambiara el
+  estado de un pedido de la tienda y que una devolucion hecha en el TPV creara
+  un reembolso en WooCommerce. Se quita: el TPV recibe las ventas, sus
+  cancelaciones y sus reembolsos, pero no los cambia.
+
 - **Quien factura.** El panel avisa de que las facturas de las ventas online
   las emite el TPV: no hay que emitirlas tambien desde WooCommerce.
 

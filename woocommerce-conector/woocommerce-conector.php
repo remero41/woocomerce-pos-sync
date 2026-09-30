@@ -69,11 +69,6 @@ function tpv_sync_module_catalog(): bool
     return (bool) get_option('tpv_sync_module_catalog', 1);
 }
 
-function tpv_sync_module_orders(): bool
-{
-    return (bool) get_option('tpv_sync_module_orders', 0);
-}
-
 // ─── Bootstrap ───────────────────────────────────────────────────────────────
 
 class TPV_Sync
@@ -341,7 +336,6 @@ register_activation_hook(__FILE__, function () {
 
     // Valores por defecto de módulos
     add_option('tpv_sync_module_catalog', 1);
-    add_option('tpv_sync_module_orders',  0);
 
     // NO se regeneran aquí los enlaces permanentes: en el hook de activación
     // el `init` que declara la regla /tpv-webhook/ todavía no ha corrido, así

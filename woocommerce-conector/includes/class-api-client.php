@@ -256,7 +256,7 @@ class TPV_Sync_API_Client
         // esta vía se disparaba, la tienda perdía el aviso de stock por talla
         // sin que nadie se enterara. Dos listas = una se queda atrás.
         $events = class_exists('TPV_Sync_Admin')
-            ? TPV_Sync_Admin::eventosSuscritos(tpv_sync_module_catalog(), tpv_sync_module_orders())
+            ? TPV_Sync_Admin::eventosSuscritos(tpv_sync_module_catalog())
             : [];
         if ($events === []) { return false; }
         $r = $this->post('/webhooks', [

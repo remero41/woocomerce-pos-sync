@@ -204,7 +204,6 @@ class TPV_Sync_Admin
             },
         ]);
         register_setting('tpv_sync_settings', 'tpv_sync_module_catalog', ['default' => 1, 'capability' => 'manage_woocommerce']);
-        register_setting('tpv_sync_settings', 'tpv_sync_module_orders',  ['default' => 0, 'capability' => 'manage_woocommerce']);
         // Decisión "¿quién manda?" — '' (sin decidir, modo legacy = WC manda),
         // 'tpv' (TPV es la fuente de verdad), 'wc' (WC es la fuente de verdad).
         register_setting('tpv_sync_settings', 'tpv_sync_principal', [
@@ -1396,7 +1395,6 @@ class TPV_Sync_Admin
         $configured = $api->isConfigured();
         $webhookId  = get_option('tpv_sync_webhook_id', '');
         $modCatalog = (bool) get_option('tpv_sync_module_catalog', 1);
-        $modOrders  = (bool) get_option('tpv_sync_module_orders',  0);
         $hasApiUrl  = (bool) get_option('tpv_sync_api_url', '');
         $hasSecret  = (bool) get_option('tpv_sync_client_secret', '');
         $principal  = (string) get_option('tpv_sync_principal', '');
@@ -1478,7 +1476,6 @@ class TPV_Sync_Admin
             <form method="post" action="options.php" class="cc-form">
                 <?php settings_fields('tpv_sync_settings'); ?>
                 <input type="hidden" name="tpv_sync_module_catalog" value="<?= $modCatalog ? 1 : 0 ?>">
-                <input type="hidden" name="tpv_sync_module_orders"  value="<?= $modOrders ? 1 : 0 ?>">
 
                 <div class="cc-field">
                     <label for="cc-api-url"><?= esc_html__('URL del TPV', 'tpv-sync') ?></label>
@@ -1990,16 +1987,9 @@ class TPV_Sync_Admin
                         <small><?= esc_html__('Productos, precios, stock', 'tpv-sync') ?></small>
                     </span>
                 </label>
-                <label class="cc-toggle">
-                    <input type="hidden" name="tpv_sync_module_orders" value="0">
-                    <input type="checkbox" name="tpv_sync_module_orders" value="1" <?= checked($modOrders, true, false) ?> data-auto-submit>
-                    <span class="cc-toggle-slider"></span>
-                    <span class="cc-toggle-label">
-                        <strong><?= esc_html__('Pedidos', 'tpv-sync') ?></strong>
-                        <small><?= esc_html__('Se crean en el TPV cuando se pagan en WooCommerce', 'tpv-sync') ?></small>
-                    </span>
-                </label>
             </form>
+            <p class="cc-step-help"><strong><?= esc_html__('Pedidos', 'tpv-sync') ?>:</strong>
+                <?= esc_html__('Cada venta pagada en la tienda entra en el TPV, con sus cancelaciones y reembolsos. Los pedidos se gestionan aquí, en WooCommerce: el TPV no los cambia.', 'tpv-sync') ?></p>
             <p class="cc-step-help"><?= esc_html(self::avisoFacturacion()) ?></p>
         </div>
 
@@ -3551,7 +3541,7 @@ class TPV_Sync_Admin
      * Los nombres tienen que existir en WebhookController::VALID_EVENTS de la
      * API; uno inventado hace que la suscripción entera falle con 422.
      */
-    public static function eventosSuscritos(bool $catalogo, bool $pedidos): array
+    public static function eventosSuscritos(bool $catalogo): array
     {
         return array_values(array_filter([
             $catalogo ? 'product.created'  : null,
@@ -3567,10 +3557,10 @@ class TPV_Sync_Admin
             $catalogo ? 'variant.created'  : null,
             $catalogo ? 'variants.updated' : null,
             $catalogo ? 'csv.imported'     : null,
-            $pedidos  ? 'order.created'         : null,
-            $pedidos  ? 'order.payment_changed' : null,
-            $pedidos  ? 'return.created'        : null,
-            $pedidos  ? 'return.deleted'        : null,
+            // Ni pedidos ni devoluciones del TPV: el amo de un pedido online
+            // es la tienda y el TPV no lo gestiona (decisión del 30-09-2026).
+            // `return.created` convertía una devolución hecha en el TPV en un
+            // reembolso de Woo.
             'customer.created',
             'customer.updated',
             'customer.deleted',
@@ -3611,7 +3601,7 @@ class TPV_Sync_Admin
         $yaRevisada = (string) get_option('tpv_sync_webhook_eventos_version', '');
         if ($yaRevisada === TPV_SYNC_VERSION) return;   // ya se hizo con esta versión
 
-        $queremos = self::eventosSuscritos(tpv_sync_module_catalog(), tpv_sync_module_orders());
+        $queremos = self::eventosSuscritos(tpv_sync_module_catalog());
 
         try {
             $api = new TPV_Sync_API_Client();
@@ -3664,7 +3654,7 @@ class TPV_Sync_Admin
                 // Eventos válidos según api/v1/controllers/WebhookController.php::VALID_EVENTS.
                 // No usar `order.status_changed` (la API no lo emite — usa
                 // `order.payment_changed` para cambios de método de pago).
-                'events' => self::eventosSuscritos(tpv_sync_module_catalog(), tpv_sync_module_orders()),
+                'events' => self::eventosSuscritos(tpv_sync_module_catalog()),
             ]);
 
             if (!empty($result['data']['webhook_id'])) {
