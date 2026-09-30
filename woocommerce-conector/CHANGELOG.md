@@ -1,4 +1,4 @@
-## Sin publicar
+## 2.10.0
 
 ### El mismo precio en la web y en la tienda física
 
