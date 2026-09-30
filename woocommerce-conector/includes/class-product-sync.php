@@ -347,7 +347,18 @@ class TPV_Sync_Product_Sync
 
         // La API devuelve precios ya con impuesto incluido (X-Price-Format: gross)
         $regularPrice = (float)$p['price'];
-        $price        = $p['special_price'] !== null ? (float)$p['special_price'] : $regularPrice;
+
+        // Un «sin precio especial» del TPV no borra la rebaja de la tienda,
+        // salvo que el catálogo lo mande el TPV. Antes cualquier edición en el
+        // TPV quitaba la rebaja de la web (y la web pasaba a cobrar el precio
+        // normal). La rebaja de Woo viaja al TPV por su cuenta (rebajaParaTpv).
+        $rebajaWoo = $postId ? (string) get_post_meta($postId, '_sale_price', true) : '';
+        $conservarRebaja = $p['special_price'] === null && $rebajaWoo !== ''
+            && get_option('tpv_sync_principal', '') !== 'tpv';
+
+        $price = $p['special_price'] !== null
+            ? (float)$p['special_price']
+            : ($conservarRebaja ? (float) $rebajaWoo : $regularPrice);
 
         $data = [
             'post_title'   => wp_strip_all_tags($p['name'] ?? ''),
@@ -373,7 +384,7 @@ class TPV_Sync_Product_Sync
         update_post_meta($postId, '_regular_price', wc_format_decimal($regularPrice));
         if ($p['special_price'] !== null) {
             update_post_meta($postId, '_sale_price', wc_format_decimal($p['special_price']));
-        } else {
+        } elseif (!$conservarRebaja) {
             delete_post_meta($postId, '_sale_price');
         }
 
@@ -1063,6 +1074,7 @@ class TPV_Sync_Product_Sync
 
         $taxClassId = $this->resolveTpvTaxClassId($product);
         if ($taxClassId > 0) $payload['tax_class_id'] = $taxClassId;
+        $payload += $this->rebajaParaTpv($product, $postId);
 
         if ($product->is_type('variable')) {
             $options = $this->build_options_for_tpv($product);
@@ -1137,6 +1149,16 @@ class TPV_Sync_Product_Sync
      */
     private function priceForTpv($product, float $rawPrice): float
     {
+        // Con una API que acepta precios con IVA se manda el PVP (lo que Woo
+        // COBRA a un cliente de España) y el TPV calcula el precio sin IVA con
+        // su clase. La cabecera X-Price-Input sale de la MISMA consulta
+        // (aceptaPrecioConIva): el número y su unidad nunca van desparejados.
+        if ($this->api->aceptaPrecioConIva()) {
+            return $this->pvpParaTpv($product, $rawPrice);
+        }
+        // API vieja: el precio sin IVA, calculado por Woo (comportamiento de
+        // siempre; con configuraciones de impuestos poco comunes no cuadra, y
+        // por eso existe el camino de arriba).
         if (!function_exists('wc_get_price_excluding_tax') || !is_object($product)) {
             return $rawPrice;
         }
@@ -1145,6 +1167,59 @@ class TPV_Sync_Product_Sync
         // Redondeo defensivo a 4 decimales — la API valida `price` numérico
         // pero al final InnoDB guarda DECIMAL(15,4) en oc_product.
         return round((float)$net, 4);
+    }
+
+    /**
+     * Lo que Woo cobra por $precio a un cliente de la dirección base de la
+     * tienda (España). La regla está en TPV_Sync_Precio_Pvp, pura; aquí solo se
+     * leen los ajustes y las tarifas de Woo.
+     */
+    private function pvpParaTpv($product, float $precio): float
+    {
+        $impuestosOn = get_option('woocommerce_calc_taxes', 'no') === 'yes';
+        $conIva      = get_option('woocommerce_prices_include_tax', 'no') === 'yes';
+        $gravado     = !is_object($product) || !method_exists($product, 'get_tax_status')
+            || $product->get_tax_status() === 'taxable';
+        $porcentaje  = 0.0;
+        if ($impuestosOn && !$conIva && $gravado && class_exists('WC_Tax')) {
+            $clase = is_object($product) && method_exists($product, 'get_tax_class') ? (string) $product->get_tax_class() : '';
+            foreach ((array) WC_Tax::get_base_tax_rates($clase) as $tasa) {
+                $porcentaje += (float) ($tasa['rate'] ?? 0);
+            }
+        }
+        $decimales = function_exists('wc_get_price_decimals') ? (int) wc_get_price_decimals() : 2;
+        return TPV_Sync_Precio_Pvp::deWoo($precio, $impuestosOn, $conIva, $gravado, $porcentaje, $decimales);
+    }
+
+    /**
+     * La rebaja de la tienda hacia el TPV (decisión del usuario, 30-09-2026).
+     *
+     *  - producto rebajado → special_price (en PVP, como el precio);
+     *  - ya no lo está pero mandamos rebaja antes → special_price null (se
+     *    quita también en la caja);
+     *  - nunca la tuvo → no se dice nada: mandar null borraría una promoción
+     *    puesta en caja.
+     *
+     * Solo con una API que acepta precios con IVA: una vieja no sabría en qué
+     * unidad viene la rebaja. Variables: la rebaja por talla no tiene sitio en
+     * el TPV (el especial es por producto), así que no se manda.
+     */
+    private function rebajaParaTpv($product, int $postId): array
+    {
+        if (!$this->api->aceptaPrecioConIva() || !is_object($product) || $product->is_type('variable')) {
+            return [];
+        }
+        $rebajado = method_exists($product, 'is_on_sale') && $product->is_on_sale()
+            && (float) $product->get_sale_price() > 0;
+        if ($rebajado) {
+            update_post_meta($postId, '_tpv_rebaja_enviada', '1');
+            return ['special_price' => $this->priceForTpv($product, (float) $product->get_sale_price())];
+        }
+        if ((string) get_post_meta($postId, '_tpv_rebaja_enviada', true) === '1') {
+            delete_post_meta($postId, '_tpv_rebaja_enviada');
+            return ['special_price' => null];
+        }
+        return [];
     }
 
     /**
@@ -1562,6 +1637,7 @@ class TPV_Sync_Product_Sync
 
         $taxClassId = $this->resolveTpvTaxClassId($product);
         if ($taxClassId > 0) $payload['tax_class_id'] = $taxClassId;
+        $payload += $this->rebajaParaTpv($product, $postId);
 
         // Si el producto es variable con variaciones, construimos la estructura
         // `options` que la API del TPV entiende (ver ProductController::syncOptions).

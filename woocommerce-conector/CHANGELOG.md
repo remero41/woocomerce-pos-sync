@@ -1,5 +1,19 @@
 ## Sin publicar
 
+### El mismo precio en la web y en la tienda física
+
+- **El TPV cobraba de más con algunas configuraciones de impuestos de
+  WooCommerce.** El conector calculaba el precio sin IVA a partir de los
+  ajustes de Woo y, si no eran los ideales (precios introducidos sin
+  impuestos, sin tarifa para España...), la caja cobraba hasta un 21 % mas que
+  la web. Ahora el conector manda lo que la web cobra al cliente y el TPV
+  calcula el IVA con su propia configuracion. Necesita la API del TPV
+  actualizada; con una anterior, todo sigue como antes.
+
+- **Las rebajas de la tienda llegan al TPV**, y se quitan cuando terminan.
+
+- **Editar un producto en el TPV ya no borra la rebaja de la web.**
+
 ### Las versiones nuevas se instalan solas
 
 - Hasta ahora el conector avisaba de que habia una version nueva, pero solo se

@@ -124,7 +124,7 @@ class TPV_Sync_API_Client
             return ['error' => 'circuit_open', 'errors' => [['error' => 'circuit_open', 'message' => 'Circuit breaker abierto — backend indispuesto']]];
         }
         $send = function() use ($path, $body, $idempotencyKey) {
-            $headers = $this->headers();
+            $headers = $this->headers(true);
             if ($idempotencyKey !== null) {
                 $headers['Idempotency-Key'] = $idempotencyKey;
             }
@@ -149,7 +149,7 @@ class TPV_Sync_API_Client
         }
         $send = function() use ($path, $body) {
             $bodyStr = wp_json_encode($body);
-            $headers = array_merge($this->headers(), $this->signHeaders($bodyStr));
+            $headers = array_merge($this->headers(true), $this->signHeaders($bodyStr));
             $response = $this->doRequestWithRetry('PATCH', $path, function() use ($path, $headers, $bodyStr) {
                 return wp_remote_request($this->baseUrl . $path, [
                     'method'  => 'PATCH',
@@ -421,7 +421,45 @@ class TPV_Sync_API_Client
 
     // ─── Helpers ─────────────────────────────────────────────────────────────
 
-    private function headers(): array
+    /** Capacidades que anuncia la API en /health (una consulta por instancia). */
+    private ?array $capacidades = null;
+
+    /**
+     * ¿La API acepta precios CON IVA al escribir (X-Price-Input: gross)?
+     *
+     * Se pregunta a /health y se recuerda una hora. Ante cualquier duda (API
+     * vieja, /health caído), no: una API que no convierte guardaría el PVP como
+     * precio sin IVA y el TPV cobraría un 21 % más. De esto depende a la vez la
+     * cabecera de escritura Y el precio que se calcula (priceForTpv): van
+     * siempre juntos.
+     */
+    public function aceptaPrecioConIva(): bool
+    {
+        if ($this->capacidades === null) {
+            $cache = function_exists('get_transient') ? get_transient('tpv_sync_api_capacidades') : false;
+            if (is_array($cache)) {
+                $this->capacidades = $cache;
+            } else {
+                $this->capacidades = [];
+                try {
+                    $r = $this->get('/health');
+                    if (self::fueBien($r)) {
+                        $this->capacidades = array_values(array_filter(
+                            (array) ($r['capabilities'] ?? $r['data']['capabilities'] ?? []), 'is_string'));
+                        if (function_exists('set_transient')) {
+                            set_transient('tpv_sync_api_capacidades', $this->capacidades,
+                                defined('HOUR_IN_SECONDS') ? HOUR_IN_SECONDS : 3600);
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    $this->capacidades = [];
+                }
+            }
+        }
+        return in_array('price_gross_write', $this->capacidades, true);
+    }
+
+    private function headers(bool $escritura = false): array
     {
         // Accept-Language: preferir locale de WP → idioma del error server.
         // `en_US` → `en`, `es_ES` → `es`. Para locales no soportados el TPV
@@ -464,7 +502,12 @@ class TPV_Sync_API_Client
             // multi-canal vía api_external_mapping. Permite que un mismo TPV
             // sirva PS, WC y Shopify a la vez sin que sus mappings se pisen.
             'X-Channel'       => 'woocommerce',
-        ];
+        ] + ($escritura && $this->aceptaPrecioConIva()
+            // Los precios que ESCRIBIMOS van con IVA (PVP): el TPV calcula el
+            // precio sin IVA con su clase. Cabecera propia, distinta de
+            // X-Price-Format: los conectores viejos mandan esa en todo.
+            ? ['X-Price-Input' => 'gross']
+            : []);
     }
 
     /**
