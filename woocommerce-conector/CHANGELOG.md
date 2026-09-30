@@ -14,6 +14,15 @@
 
 - **Editar un producto en el TPV ya no borra la rebaja de la web.**
 
+### Los pedidos entran aunque el producto se haya borrado en el TPV
+
+- **Si se borraba en el TPV un producto que seguía a la venta en la web, sus
+  pedidos no llegaban nunca al TPV.** El TPV rechazaba el pedido entero y el
+  conector lo reintentaba igual una y otra vez. Ahora el conector lo detecta,
+  vuelve a enlazar el producto (o lo da de alta en el TPV si ya no está) y
+  manda el pedido completo. Si lo borrado era una talla, la venta se apunta
+  al producto.
+
 ### Las versiones nuevas se instalan solas
 
 - Hasta ahora el conector avisaba de que habia una version nueva, pero solo se

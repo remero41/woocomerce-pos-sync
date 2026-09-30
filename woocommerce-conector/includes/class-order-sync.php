@@ -105,38 +105,7 @@ class TPV_Sync_Order_Sync
         // Una línea sin enlace ya NO se descarta (llegaba al TPV un pedido a
         // medias, o ninguno): se asegura su producto en el TPV en el momento.
         // Si alguna sigue sin gemelo, el pedido entero se retiene.
-        $products = [];
-        $faltan   = [];
-        foreach ($order->get_items() as $item) {
-            $tpvId = $this->products->asegurarEnTpv((int) $item->get_product_id());
-            if (!$tpvId) {
-                $faltan[] = $item->get_name() . ' (#' . (int) $item->get_product_id() . ')';
-                continue;
-            }
-
-            $qty         = (float)$item->get_quantity();
-            $lineNetTot  = (float)$item->get_total();       // neto línea
-            // get_total_tax() es método estándar de WC_Order_Item_Product; en stubs
-            // de test puede no existir. Fallback a 0 (legacy sin tax).
-            $lineTaxTot  = method_exists($item, 'get_total_tax') ? (float)$item->get_total_tax() : 0.0;
-            $qtySafe     = $qty > 0 ? $qty : 1.0;
-
-            // Qué variante se vendió. get_product_id() devuelve el PADRE; la
-            // talla concreta está en get_variation_id(), y su equivalente en
-            // el TPV en el meta _tpv_option_value_id que dejó el volcado.
-            $povId = 0;
-            if (method_exists($item, 'get_variation_id') && (int) $item->get_variation_id() > 0) {
-                $povId = (int) get_post_meta((int) $item->get_variation_id(), '_tpv_option_value_id', true);
-            }
-
-            $products[] = self::idsDeLinea((int)$tpvId, $povId) + [
-                'name'       => $item->get_name(),
-                'quantity'   => $qty,
-                'price'      => $lineNetTot / $qtySafe,     // unit net
-                'tax'        => $lineTaxTot / $qtySafe,     // unit tax
-                'total'      => $lineNetTot,                // net line total
-            ];
-        }
+        [$products, $faltan, $origen] = $this->lineasParaTpv($order);
 
         if (!empty($faltan)) {
             $this->retener($order, $faltan);
@@ -194,7 +163,7 @@ class TPV_Sync_Order_Sync
         // La API no re-usa este valor si el desglose de líneas es coherente:
         // internamente recalcula subTotal + totalTax desde las líneas.
         $payload = [
-            'products'       => $products,
+            'products'       => [],
             'payment_method' => $order->get_payment_method_title() ?: 'online',
             'total'          => (float)$order->get_total(),  // gross — con IVA
             'comment'        => 'WooCommerce #' . $wcOrderId,
@@ -208,7 +177,28 @@ class TPV_Sync_Order_Sync
         if (!empty($shipping))    $payload['shipping'] = $shipping;
         if (!empty($vouchers))    $payload['vouchers'] = $vouchers;
 
-        $result = $this->api->post('/orders', $payload, $idemKey);
+        // Un enlace a un producto (o talla) que el TPV ya no tiene hace que la
+        // API rechace el pedido ENTERO con not_found. Se quita ese enlace, la
+        // línea se vuelve a asegurar y se reenvía. Cada línea se repara una
+        // sola vez: si el TPV la sigue rechazando, es otro problema y va a la
+        // cola como cualquier error.
+        $reparados = [];
+        while (true) {
+            $payload['products'] = $products;
+            $result = $this->api->post('/orders', $payload, $idemKey);
+            if (!empty($result['data']['order_id'])) {
+                break;
+            }
+            $roto = self::enlaceRoto($result);
+            if ($roto === null || !$this->quitarEnlaceRoto($wcOrderId, $roto, $origen, $reparados)) {
+                break;
+            }
+            [$products, $faltan, $origen] = $this->lineasParaTpv($order);
+            if (!empty($faltan)) {
+                $this->retener($order, $faltan);
+                return;
+            }
+        }
 
         if (!empty($result['data']['order_id'])) {
             $tpvOrderId = (int)$result['data']['order_id'];
@@ -243,6 +233,96 @@ class TPV_Sync_Order_Sync
                 }
             }
         }
+    }
+
+    /**
+     * Las líneas del pedido hacia el TPV, las que no tienen gemelo, y de qué
+     * post de Woo sale el enlace de cada una (para poder quitarlo si el TPV
+     * lo rechaza).
+     *
+     * @return array{0: array, 1: string[], 2: array<int, array{post:int, product_id:int, variacion:int, pov:int}>}
+     */
+    private function lineasParaTpv($order): array
+    {
+        $products = [];
+        $faltan   = [];
+        $origen   = [];
+        foreach ($order->get_items() as $item) {
+            $tpvId = $this->products->asegurarEnTpv((int) $item->get_product_id());
+            if (!$tpvId) {
+                $faltan[] = $item->get_name() . ' (#' . (int) $item->get_product_id() . ')';
+                continue;
+            }
+
+            $qty         = (float)$item->get_quantity();
+            $lineNetTot  = (float)$item->get_total();       // neto línea
+            // get_total_tax() es método estándar de WC_Order_Item_Product; en stubs
+            // de test puede no existir. Fallback a 0 (legacy sin tax).
+            $lineTaxTot  = method_exists($item, 'get_total_tax') ? (float)$item->get_total_tax() : 0.0;
+            $qtySafe     = $qty > 0 ? $qty : 1.0;
+
+            // Qué variante se vendió. get_product_id() devuelve el PADRE; la
+            // talla concreta está en get_variation_id(), y su equivalente en
+            // el TPV en el meta _tpv_option_value_id que dejó el volcado.
+            $povId = 0;
+            if (method_exists($item, 'get_variation_id') && (int) $item->get_variation_id() > 0) {
+                $povId = (int) get_post_meta((int) $item->get_variation_id(), '_tpv_option_value_id', true);
+            }
+
+            $origen[] = ['post' => (int) $item->get_product_id(), 'product_id' => (int) $tpvId,
+                         'variacion' => $povId > 0 ? (int) $item->get_variation_id() : 0, 'pov' => $povId];
+            $products[] = self::idsDeLinea((int)$tpvId, $povId) + [
+                'name'       => $item->get_name(),
+                'quantity'   => $qty,
+                'price'      => $lineNetTot / $qtySafe,     // unit net
+                'tax'        => $lineTaxTot / $qtySafe,     // unit tax
+                'total'      => $lineNetTot,                // net line total
+            ];
+        }
+
+        return [$products, $faltan, $origen];
+    }
+
+    /**
+     * Qué enlace ha roto el pedido, si el rechazo es por un producto o una
+     * talla que el TPV ya no tiene: ['product_id'|'product_option_value_id', id].
+     * El cliente negocia problem+json (`code`); se acepta también el formato
+     * clásico (`errors[0].error`).
+     */
+    public static function enlaceRoto(array $r): ?array
+    {
+        $codigo = (string) ($r['code'] ?? $r['errors'][0]['error'] ?? '');
+        if (!preg_match('/^not_found:(product_id|product_option_value_id):(\d+)$/', $codigo, $m)) {
+            return null;
+        }
+        return [$m[1], (int) $m[2]];
+    }
+
+    /**
+     * Quita el enlace roto de las líneas que lo llevan y que aún no se han
+     * reparado en este envío. Sin enlace, la línea se vuelve a asegurar
+     * (reenlazar o alta) y una talla va a nombre del padre. Devuelve si quitó
+     * alguno: si no, reenviar daría el mismo error.
+     */
+    private function quitarEnlaceRoto(int $wcOrderId, array $roto, array $origen, array &$reparados): bool
+    {
+        [$campo, $id] = $roto;
+        $quitado = false;
+        foreach ($origen as $o) {
+            if ($campo === 'product_id' && $o['product_id'] === $id && !isset($reparados['p' . $o['post']])) {
+                delete_post_meta($o['post'], TPV_Sync_Product_Sync::TPV_ID_META);
+                $reparados['p' . $o['post']] = true;
+                $quitado = true;
+            } elseif ($campo === 'product_option_value_id' && $o['pov'] === $id) {
+                // Sin su meta la línea ya no lleva talla: no puede volver a fallar por ella.
+                delete_post_meta($o['variacion'], '_tpv_option_value_id');
+                $quitado = true;
+            }
+        }
+        if ($quitado) {
+            $this->log($wcOrderId, 'warn', "El TPV ya no tiene {$campo} {$id}: enlace quitado, se reenvía");
+        }
+        return $quitado;
     }
 
     /**
