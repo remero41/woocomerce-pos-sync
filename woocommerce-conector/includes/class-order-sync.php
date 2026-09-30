@@ -276,6 +276,47 @@ class TPV_Sync_Order_Sync
     }
 
     /**
+     * Recupera, UNA vez por instalación, los pedidos que el conector descartó
+     * antes de que dejara de mandarlos a medias: los registrados como `skip`
+     * «Sin productos mapeados al TPV», nunca se volvían a intentar.
+     *
+     * Solo los pagados (en proceso o completados) que siguen sin pedido en el
+     * TPV: se marcan como retenidos y reintentarPendientes() los envía.
+     * Decisión del usuario (30-09-2026): automático; si alguno se metió a mano
+     * en el TPV y se duplica, lo asume la comerciante.
+     */
+    private function recuperarDescartados(): void
+    {
+        if (get_option('tpv_sync_recuperacion_descartados_v1')) {
+            return;
+        }
+        update_option('tpv_sync_recuperacion_descartados_v1', 1, false);
+
+        global $wpdb;
+        $ids = array_map('intval', (array) $wpdb->get_col($wpdb->prepare(
+            "SELECT DISTINCT resource_id FROM {$wpdb->prefix}tpv_sync_log
+             WHERE event_type = %s AND status = %s AND message = %s",
+            'order_sync', 'skip', 'Sin productos mapeados al TPV'
+        )));
+        foreach ($ids as $wcOrderId) {
+            if ($wcOrderId <= 0
+                || get_post_meta($wcOrderId, self::TPV_ORDER_META, true)
+                || (string) get_post_meta($wcOrderId, self::PENDIENTE_META, true) !== '') {
+                continue;
+            }
+            $order = wc_get_order($wcOrderId);
+            if (!$order || !in_array($order->get_status(), ['processing', 'completed'], true)) {
+                continue;
+            }
+            $order->add_order_note('Recuperado: este pedido no llegó al TPV porque sus productos '
+                . 'no estaban enlazados. Se envía ahora automáticamente.');
+            update_post_meta($wcOrderId, self::PENDIENTE_META,
+                wp_json_encode(['desde' => gmdate('c'), 'faltan' => [], 'recuperado' => true]));
+            $this->log($wcOrderId, 'pendiente', 'Recuperado: descartado antes por falta de enlace');
+        }
+    }
+
+    /**
      * Reintenta los pedidos retenidos, por tandas y con cursor (los que siguen
      * atascados no tapan a los de detrás). Lo llama el cron
      * `tpv_sync_pedidos_pendientes` cada 5 minutos. No va por la cola: la cola
@@ -284,7 +325,8 @@ class TPV_Sync_Order_Sync
     public function reintentarPendientes(int $lote = 10): array
     {
         global $wpdb;
-        $stats  = ['revisados' => 0, 'enviados' => 0];
+        $this->recuperarDescartados();
+        $stats  = ['revisados' => 0, 'enviados' => 0, 'devoluciones' => 0];
         $cursor = (int) get_option('tpv_sync_pedidos_cursor', 0);
         $ids = array_map('intval', (array) $wpdb->get_col($wpdb->prepare(
             "SELECT post_id FROM {$wpdb->postmeta}
@@ -294,16 +336,19 @@ class TPV_Sync_Order_Sync
         )));
         if (empty($ids)) {
             update_option('tpv_sync_pedidos_cursor', 0, false);
-            return $stats;
-        }
-        foreach ($ids as $wcOrderId) {
-            $stats['revisados']++;
-            $this->send_to_tpv($wcOrderId);
-            if (get_post_meta($wcOrderId, self::TPV_ORDER_META, true)) {
-                $stats['enviados']++;
+        } else {
+            foreach ($ids as $wcOrderId) {
+                $stats['revisados']++;
+                $this->send_to_tpv($wcOrderId);
+                if (get_post_meta($wcOrderId, self::TPV_ORDER_META, true)) {
+                    $stats['enviados']++;
+                }
             }
+            update_option('tpv_sync_pedidos_cursor', end($ids), false);
         }
-        update_option('tpv_sync_pedidos_cursor', end($ids), false);
+        // Después de los pedidos: la devolución que esperaba a su pedido sale
+        // en la misma pasada.
+        $stats['devoluciones'] = $this->reintentarDevolucionesPendientes($lote);
         return $stats;
     }
 
@@ -358,30 +403,60 @@ class TPV_Sync_Order_Sync
             return;
         }
 
+        $refund = wc_get_order($refundId);
+        if (!$refund) return;
+
         $tpvOrderId = (int)get_post_meta($wcOrderId, self::TPV_ORDER_META, true);
         if (!$tpvOrderId) {
-            // El pedido original no está en TPV (venta previa al plugin, por ejemplo)
+            if ((string) get_post_meta($wcOrderId, self::PENDIENTE_META, true) !== '') {
+                // El pedido está retenido (aún no está en el TPV): el reembolso
+                // espera y sale cuando salga el pedido (reintentarPendientes).
+                $this->retenerDevolucion($refund, $wcOrderId, ['el pedido aún no está en el TPV']);
+                return;
+            }
+            // Venta anterior al conector: no hay nada que devolver en el TPV.
             $this->log($wcOrderId, 'skip', "Refund WC #{$refundId}: pedido sin mapeo en TPV");
             return;
         }
 
-        $refund = wc_get_order($refundId);
-        if (!$refund) return;
+        // Líneas del pedido en el TPV: para devolver cada talla a SU línea.
+        // Con dos líneas del mismo producto la API exige order_product_id.
+        $tpvOrder  = $this->api->get("/orders/{$tpvOrderId}");
+        $lineasTpv = (array) ($tpvOrder['data']['products'] ?? []);
 
-        $errors = 0;
+        // Lo que ya entró de este reembolso (item id => return id). Un
+        // reintento solo manda lo que falta: la idempotencia de la API caduca a
+        // las 24 h y la cola reintenta hasta ~29 h, así que reenviarlo todo
+        // podía devolver dos veces lo ya devuelto.
+        $hechas = get_post_meta($refundId, '_tpv_refund_lineas', true);
+        $hechas = is_array($hechas) ? $hechas : [];
+
+        $errores   = 0;
+        $faltan    = [];   // sin gemelo en el TPV: puede arreglarse
+        $ausentes  = [];   // enlazado pero no vendido en ese pedido del TPV
         foreach ($refund->get_items() as $item) {
-            $tpvProductId = (int)get_post_meta($item->get_product_id(), TPV_Sync_Product_Sync::TPV_ID_META, true);
-            if (!$tpvProductId) continue;
+            $itemId = (int) $item->get_id();
+            $qty    = abs((float) $item->get_quantity());   // en Woo, negativa
+            if ($qty <= 0 || isset($hechas[$itemId])) continue;
 
-            // En WC los items de un refund tienen quantity negativa
-            $qty = abs((float)$item->get_quantity());
-            if ($qty <= 0) continue;
+            $tpvProductId = $this->products->asegurarEnTpv((int) $item->get_product_id());
+            if (!$tpvProductId) {
+                $faltan[] = $item->get_name() . ' (#' . (int) $item->get_product_id() . ')';
+                continue;
+            }
+            $povId = (int) $item->get_variation_id() > 0
+                ? (int) get_post_meta((int) $item->get_variation_id(), '_tpv_option_value_id', true)
+                : 0;
+            $opid = self::lineaADevolverTpv($lineasTpv, $tpvProductId, $povId);
+            if ($opid === null) {
+                $ausentes[] = $item->get_name() . ' (#' . (int) $item->get_product_id() . ')';
+                continue;
+            }
 
-            // Idempotency-Key por línea de refund (refundId + productId).
-            // Incluye el product_id para que refunds multi-línea no colisionen.
-            $idemKey = 'wc-refund-' . $refundId . '-' . $tpvProductId;
-
-            $result = $this->api->post("/orders/{$tpvOrderId}/returns", [
+            // Sin return_status_id: la API da de alta la devolución ejecutada
+            // (3) y rechaza cualquier otro (422 invalid_return_status desde el
+            // 22-08). El plugin mandaba 1: NINGÚN reembolso llegaba al TPV.
+            $body = [
                 'product_id'       => $tpvProductId,
                 'quantity'         => $qty,
                 'product_name'     => $item->get_name(),
@@ -389,29 +464,136 @@ class TPV_Sync_Order_Sync
                                     . ($refund->get_reason() ? ' — ' . $refund->get_reason() : ''),
                 'return_reason_id' => 0,
                 'return_action_id' => 0,
-                'return_status_id' => 1,
-            ], $idemKey);
+            ];
+            if ($opid > 0) {
+                $body['order_product_id'] = $opid;
+            }
+            // Clave por LÍNEA del reembolso: con una por producto, dos tallas
+            // del mismo producto compartían clave y la 2.ª se perdía.
+            $result = $this->api->post("/orders/{$tpvOrderId}/returns", $body, "wc-refund-{$refundId}-{$itemId}");
 
-            if (empty($result['data']['return_id']) && empty($result['return_id'])) {
-                $errors++;
+            $returnId = (int) ($result['data']['return_id'] ?? $result['return_id'] ?? 0);
+            if ($returnId > 0) {
+                $hechas[$itemId] = $returnId;
+            } else {
+                $errores++;
                 $msg = $result['errors'][0]['message'] ?? wp_json_encode($result);
-                $this->log($wcOrderId, 'error', "Refund WC #{$refundId} producto {$tpvProductId}: {$msg}");
+                $this->log($wcOrderId, 'error', "Refund WC #{$refundId} línea {$itemId}: {$msg}");
             }
         }
+        update_post_meta($refundId, '_tpv_refund_lineas', $hechas);
 
-        if ($errors === 0) {
-            update_post_meta($refundId, '_tpv_refund_synced', 1);
-            $this->log($wcOrderId, 'ok', "Refund WC #{$refundId} propagado a TPV order #{$tpvOrderId}");
-        } else {
-            // Encolar para reintento: al menos una línea del refund falló.
+        if (!empty($ausentes)) {
+            // No se arregla esperando: el pedido llegó al TPV sin esa línea
+            // (antes de que el conector dejara de mandar pedidos a medias).
+            $this->notaUnaVez($refund, '_tpv_refund_nota_ausente',
+                'No se pudo registrar en el TPV la devolución de: ' . implode(', ', $ausentes)
+                . ". Ese producto no está en el pedido #{$tpvOrderId} del TPV: revísalo a mano.");
+            $this->log($wcOrderId, 'error', "Refund WC #{$refundId}: líneas ausentes del pedido TPV #{$tpvOrderId}");
+        }
+        if (!empty($faltan)) {
+            $this->retenerDevolucion($refund, $wcOrderId, $faltan);
+        }
+        if ($errores > 0) {
             if (class_exists('TPV_Sync') && class_exists('TPV_Sync_Queue')) {
                 TPV_Sync::instance()->queue->enqueue(
                     'refund.send',
                     ['wc_order_id' => $wcOrderId, 'refund_id' => $refundId],
-                    "$errors line(s) failed in refund"
+                    "$errores line(s) failed in refund"
                 );
             }
         }
+        if ($errores === 0 && empty($faltan) && empty($ausentes)) {
+            update_post_meta($refundId, '_tpv_refund_synced', 1);
+            delete_post_meta($refundId, '_tpv_refund_pendiente');
+            $this->log($wcOrderId, 'ok', "Refund WC #{$refundId} propagado a TPV order #{$tpvOrderId}");
+        }
+    }
+
+    /**
+     * La línea del pedido del TPV a la que vuelve una línea del reembolso.
+     * Función pura.
+     *
+     * - con talla ($povId > 0): la línea de ese producto con esa talla;
+     * - si no: 0, sin order_product_id. La API resuelve sola la única línea
+     *   del producto, y si hay varias indistinguibles responde que lo
+     *   necesita (no se adivina cuál vuelve);
+     * - el producto no está en el pedido: null.
+     */
+    public static function lineaADevolverTpv(array $lineasTpv, int $tpvProductId, int $povId): ?int
+    {
+        $delProducto = array_values(array_filter($lineasTpv,
+            fn ($l) => (int) ($l['product_id'] ?? 0) === $tpvProductId));
+        if (empty($delProducto)) {
+            return null;
+        }
+        if ($povId > 0) {
+            foreach ($delProducto as $l) {
+                foreach ((array) ($l['options'] ?? []) as $o) {
+                    if ((int) ($o['product_option_value_id'] ?? 0) === $povId) {
+                        return (int) $l['order_product_id'];
+                    }
+                }
+            }
+        }
+        return 0;
+    }
+
+    /** Devolución que espera: pendiente + nota UNA vez; la reintenta reintentarPendientes(). */
+    private function retenerDevolucion($refund, int $wcOrderId, array $motivos): void
+    {
+        $refundId = (int) $refund->get_id();
+        $this->notaUnaVez($refund, '_tpv_refund_pendiente',
+            'Devolución pendiente de registrar en el TPV (' . implode(', ', $motivos) . '). '
+            . 'Se reintentará sola en cuanto se pueda.');
+        update_post_meta($refundId, '_tpv_refund_pendiente',
+            wp_json_encode(['pedido' => $wcOrderId, 'desde' => gmdate('c'), 'motivos' => $motivos]));
+        $this->log($wcOrderId, 'pendiente', "Refund WC #{$refundId} retenido: " . implode(', ', $motivos));
+    }
+
+    /** Nota en el pedido/reembolso solo si $metaMarca aún no está puesta. */
+    private function notaUnaVez($objeto, string $metaMarca, string $nota): void
+    {
+        $id = (int) $objeto->get_id();
+        if ((string) get_post_meta($id, $metaMarca, true) === '') {
+            $objeto->add_order_note($nota);
+            if ($metaMarca !== '_tpv_refund_pendiente') {
+                update_post_meta($id, $metaMarca, 1);
+            }
+        }
+    }
+
+    /**
+     * Reintenta las devoluciones retenidas, por tandas con cursor. La llama
+     * reintentarPendientes() después de los pedidos: una devolución que
+     * esperaba a su pedido sale en la misma pasada que él.
+     */
+    public function reintentarDevolucionesPendientes(int $lote = 10): int
+    {
+        global $wpdb;
+        $cursor = (int) get_option('tpv_sync_devoluciones_cursor', 0);
+        $ids = array_map('intval', (array) $wpdb->get_col($wpdb->prepare(
+            "SELECT post_id FROM {$wpdb->postmeta}
+             WHERE meta_key = '_tpv_refund_pendiente' AND post_id > %d
+             ORDER BY post_id ASC LIMIT %d",
+            $cursor, $lote
+        )));
+        if (empty($ids)) {
+            update_option('tpv_sync_devoluciones_cursor', 0, false);
+            return 0;
+        }
+        $hechas = 0;
+        foreach ($ids as $refundId) {
+            $datos = json_decode((string) get_post_meta($refundId, '_tpv_refund_pendiente', true), true);
+            $wcOrderId = (int) ($datos['pedido'] ?? 0);
+            if ($wcOrderId <= 0) continue;
+            $this->on_wc_refund($wcOrderId, $refundId);
+            if (get_post_meta($refundId, '_tpv_refund_synced', true)) {
+                $hechas++;
+            }
+        }
+        update_option('tpv_sync_devoluciones_cursor', end($ids), false);
+        return $hechas;
     }
 
     // ─── TPV → WC: actualizar estado ─────────────────────────────────────────

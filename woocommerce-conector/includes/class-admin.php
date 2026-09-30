@@ -2000,6 +2000,7 @@ class TPV_Sync_Admin
                     </span>
                 </label>
             </form>
+            <p class="cc-step-help"><?= esc_html(self::avisoFacturacion()) ?></p>
         </div>
 
         <details class="cc-advanced">
@@ -3526,6 +3527,19 @@ class TPV_Sync_Admin
      *      el TPV decidiese sobreescribir (versiones futuras). Tomamos el
      *      de la respuesta como fuente de verdad.
      */
+    /**
+     * Quién factura las ventas online: el TPV (decisión del usuario,
+     * 30-09-2026). Cada venta pagada en la tienda entra en el TPV, que le
+     * asigna factura de su serie y la registra en Hacienda; si la tienda
+     * factura también, la misma venta tendría dos facturas.
+     */
+    public static function avisoFacturacion(): string
+    {
+        return __('Cada venta pagada en la tienda entra en el TPV, y es el TPV quien emite su factura '
+            . '(y la registra en Hacienda si tiene VeriFactu). No emitas facturas desde WooCommerce: '
+            . 'la misma venta tendría dos.', 'tpv-sync');
+    }
+
     /**
      * Los eventos del TPV a los que se suscribe esta versión del plugin.
      *

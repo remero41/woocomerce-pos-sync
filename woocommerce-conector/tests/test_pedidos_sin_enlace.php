@@ -53,8 +53,9 @@ final class ItemPedidoFalso
 final class PedidoWooFalso
 {
     public array $notas = [];
-    public function __construct(private int $id, private array $items) {}
+    public function __construct(private int $id, private array $items, private string $estado = 'processing') {}
     public function get_id() { return $this->id; }
+    public function get_status() { return $this->estado; }
     public function get_items($tipo = 'line_item') { return $tipo === 'coupon' ? [] : $this->items; }
     public function get_payment_method_title() { return 'Tarjeta'; }
     public function get_total() { return 0.0; }
@@ -157,13 +158,26 @@ final class WpdbPedidos
         // La cola: todo lo pendiente (el reloj no importa aquí).
         return array_values(array_filter($this->cola, fn ($f) => $f->status === 'pending'));
     }
-    /** Pedidos pendientes de enlace con ID > cursor, ascendentes. */
+    /** Posts con el meta pendiente de la consulta, ID > cursor, ascendentes. */
     public function get_col($q)
     {
+        if (str_contains($q['sql'], 'tpv_sync_log')) {
+            // Pedidos registrados con ese evento, estado y mensaje.
+            [$evento, $estado, $mensaje] = $q['args'];
+            $ids = [];
+            foreach ($this->log as $f) {
+                if (($f['event_type'] ?? '') === $evento && ($f['status'] ?? '') === $estado
+                    && ($f['message'] ?? '') === $mensaje) {
+                    $ids[] = (string) $f['resource_id'];
+                }
+            }
+            return array_values(array_unique($ids));
+        }
         [$cursor, $limite] = $q['args'];
+        preg_match("/meta_key = '([a-z_]+)'/", $q['sql'], $m);
         $ids = [];
         foreach ($GLOBALS['__wp_meta'] as $id => $metas) {
-            if (isset($metas['_tpv_order_pendiente']) && $id > $cursor) { $ids[] = $id; }
+            if (isset($metas[$m[1]]) && $id > $cursor) { $ids[] = $id; }
         }
         sort($ids);
         return array_map('strval', array_slice($ids, 0, $limite));

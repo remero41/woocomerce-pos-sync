@@ -133,7 +133,17 @@ Mutantes mínimos: uno por fila de la tabla. Criterio de cierre: la suite entera
 ## 3.1 Estado de la entrega
 
 - **F1 + F2: HECHO** (rama `fix/pedidos-sin-enlace`). Tests T1-T7 y T12-T15, más: pedido sin líneas (no se retiene), cursor de reintento que vuelve a empezar y variación nunca enlazada ni dada de alta suelta. Suite 547/547; 14 mutantes muertos.
-- F3, F4, F5: pendientes.
+- **F3: HECHO** (worktree `fix/devoluciones-completas`, sin commit). Hallazgo nuevo **P9**: desde el 22-08 (api_tpv `bb2b474`) la API rechaza `return_status_id` ≠ 3 y el plugin mandaba 1, así que **ningún reembolso de Woo llegaba al TPV**. Arreglado sin mandar el campo. Cada línea se devuelve a su `order_product_id` (talla por `product_option_value_id`, sacado de `GET /orders/{id}`). La clave es por línea del reembolso, se recuerda lo ya devuelto (`_tpv_refund_lineas`) y un reintento solo manda lo que falta. Una línea que el TPV no acepta queda pendiente con nota; una línea ausente del pedido del TPV (pedido que llegó a medias antes) lleva nota «revísalo a mano» y no se reintenta. Un reembolso de un pedido retenido espera a su pedido. Mutantes: 15 muertos, 1 equivalente eliminado (R13).
+- **F4: HECHO** (mismo worktree). `recuperarDescartados()`, una vez por instalación y al arrancar el reintento: solo los `skip` «Sin productos mapeados al TPV» pagados (processing/completed) que siguen sin pedido en el TPV y sin retener; nota «Recuperado». 8 mutantes muertos (Q4 y Q8 sobrevivieron al principio y destaparon un pendiente eterno y una nota duplicada).
+- **F5.1: HECHO en la API** (worktree api_tpv `fix/fiscal-venta-online`, sin commit). `OrderController::registrarFiscal()` dispara `on_order_complete` con `pedido_contexto_fiscal()` tras el COMMIT de un alta con cobro; un fallo se registra sin tumbar el alta. `ApiPlugins::manager()` es el punto único y sustituible para tests; el cargador carga ahora `shared/pedido/fiscal.php`. Test de comportamiento real (alta contra BD + gestor de plugins que graba): 3/3, 5 mutantes muertos. VeriFactu ya era idempotente (`already_sent` si hay CSV o huella): el ticket impreso después no registra dos veces.
+- **F5.2: HECHO** (worktree del plugin). `TPV_Sync_Admin::avisoFacturacion()` se muestra en «Qué se sincroniza».
+- **Pendiente de validar en `ta`** antes de activar VeriFactu en tiendas con conector (F5 sigue siendo bloqueante hasta entonces).
+
+### Hallazgos al margen (sin tocar)
+
+- **El interruptor «Pedidos» del panel miente**: dice «Se crean en el TPV cuando se pagan», pero los pedidos se envían siempre. Solo controla la suscripción a `order.status_changed` (TPV→Woo), que es la mitad muerta a retirar. Propuesta: quitarlo junto con esa mitad.
+- **Evento `order.created` duplicado**: la API emite el suyo y el bridge del conector del TPV (`plugin_wordpress_connector`) emite otro en `on_order_complete`. El plugin de Woo solo lo registra: es ruido, no un fallo.
+- **PrestaShop** (`prestashop-pos-sync`): mismo P9 (`return_status_id` = 1): arreglado con su test en el worktree `fix/devolucion-status-api`, sin commit. Siguen en PrestaShop P5 (reenvío completo), P7 (clave por producto), la línea sin enlace dada por buena y P1/P2 de pedidos: llevar F1–F4 allí es otro trabajo.
 
 ## 4. Decisiones (tomadas)
 
