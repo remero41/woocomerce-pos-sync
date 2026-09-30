@@ -318,6 +318,20 @@ function run_autocuracion_tests(WooTestRunner $t): void
         $t->assertEquals(0, (int) get_option('tpv_sync_autocura_cursor'));
     });
 
+    $t->test('una pasada recorre por TIEMPO, no por número: 300 productos sin nada pendiente, de una vez', function ($t) {
+        // lulubeauty (30-09): el cron solo corre cuando alguien visita la web.
+        // Con 25 productos por pasada, 3 visitas en 3 horas avanzaron 75 de
+        // ~850. Revisar un producto que no tiene nada pendiente cuesta
+        // milisegundos: lo que limita una pasada es el tiempo, no el número.
+        $tienda = [];
+        for ($id = 1; $id <= 300; $id++) { $tienda[$id] = ['S' . $id, 0, [], 1000 + $id]; }
+        autocura_tienda($tienda);
+        $api = new ApiAutocuraFalsa();
+        $r = (new TPV_Sync_Product_Sync($api))->autocurar();
+        $t->assertEquals(300, $r['revisados'] ?? -1, 'antes: 25 por visita');
+        $t->assertEquals(0, $api->gets + count($api->posts), 'y sin gastar ni una llamada a la API');
+    });
+
     $t->test('sin presupuesto de tiempo: deja el cursor donde se quedó', function ($t) {
         autocura_tienda([1 => ['A', 70, [], 11], 2 => ['B', 71, [], 12]]);
         $api = new ApiAutocuraFalsa();

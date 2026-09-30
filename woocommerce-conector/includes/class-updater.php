@@ -10,9 +10,10 @@ declare(strict_types=1);
  *
  * Ahora el plugin se engancha al mismo sitio por donde WordPress pregunta por
  * actualizaciones (`pre_set_site_transient_update_plugins`) y le contesta con
- * el último release publicado. El comerciante ve el aviso de siempre en
- * Plugins y actualiza con un clic, sin desinstalar ni perder su configuración
- * (que vive en wp_options, no en los ficheros).
+ * el último release publicado, y además se marca para actualizarse solo
+ * (`auto_update_plugin`, desde la 2.10.0): la tienda recibe la versión nueva
+ * sin entrar a su WordPress, sin desinstalar ni perder su configuración (que
+ * vive en wp_options, no en los ficheros).
  *
  * El repo es PÚBLICO, así que la API se consulta sin token ni credenciales.
  *
@@ -51,6 +52,12 @@ class TPV_Sync_Updater
     public function registrar(): void
     {
         add_filter('pre_set_site_transient_update_plugins', [$this, 'ofrecerActualizacion']);
+        // Ofrecer no basta: sin esto la versión nueva solo se instala si la
+        // tienda activó «Actualizaciones automáticas» para el plugin.
+        $pluginFile = $this->pluginFile;
+        add_filter('auto_update_plugin', static function ($update, $item) use ($pluginFile) {
+            return self::debeAutoActualizar($update, $item, $pluginFile);
+        }, 10, 2);
         add_filter('plugins_api', [$this, 'ficha'], 10, 3);
         // Tras actualizar, la respuesta cacheada ya no vale.
         add_action('upgrader_process_complete', static function ($upgrader, array $hook): void {
@@ -64,6 +71,24 @@ class TPV_Sync_Updater
         add_action('delete_site_transient_update_plugins', static function (): void {
             delete_transient(self::CACHE_KEY);
         });
+    }
+
+    /**
+     * Respuesta al filtro `auto_update_plugin`: este plugin se actualiza solo;
+     * a los demás no se les cambia nada.
+     *
+     * Solo ofrecer la versión nueva dejaba cada tienda en la que tuviera hasta
+     * que alguien entrara a su WordPress (lulubeauty, 30-09-2026: en la 2.7.0
+     * con la 2.8.0 y la 2.9.0 publicadas). Decisión del usuario: que llegue
+     * sola. La contrapartida es que una release mala también llega sola a
+     * todas: por eso el ZIP se verifica antes de publicar.
+     */
+    public static function debeAutoActualizar($update, $item, string $pluginFile)
+    {
+        if (is_object($item) && isset($item->plugin) && $item->plugin === $pluginFile) {
+            return true;
+        }
+        return $update;
     }
 
     // ─── Enganches de WordPress ──────────────────────────────────────────

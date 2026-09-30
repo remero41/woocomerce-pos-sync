@@ -38,6 +38,12 @@ function run_cron_cableado_tests(WooTestRunner $t): void
             'un pedido retenido que nadie reintenta es un pedido perdido');
     });
 
+    $t->test('el plugin se registra para actualizarse solo (y solo él)', function ($t) use ($r) {
+        $t->assertEquals(true, $r['auto_update']['nuestro'] ?? null,
+            'sin el filtro enganchado, la versión nueva solo se ofrece y la tienda se queda atrás');
+        $t->assertEquals(false, $r['auto_update']['ajeno'] ?? null, 'los plugins ajenos, como estaban');
+    });
+
     $t->test('todo evento programado tiene su add_action', function ($t) use ($r) {
         $huerfanos = array_diff(array_keys($r['programados']), $r['acciones']);
         $t->assertEquals([], array_values($huerfanos), 'programado y sin nadie que lo ejecute');
