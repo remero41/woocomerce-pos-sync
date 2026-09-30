@@ -15,6 +15,22 @@
   el TPV, un producto creado solo en la tienda antes se ignoraba; ahora se da
   de alta tambien en el TPV (a partir de ahi manda el TPV sobre el).
 
+- **Los reembolsos de la tienda no llegaban al TPV.** Desde el 22-08 el TPV
+  rechazaba todos los que mandaba el conector (un dato que ya no admite).
+  Ahora llegan, y ademas: cada talla vuelve a su linea (y a su stock), dos
+  tallas del mismo producto ya no se pisan, y un reintento solo manda lo que
+  faltaba (antes podia devolver dos veces lo ya devuelto). Si un producto del
+  reembolso no existe en el TPV, el reembolso queda pendiente con una nota; si
+  el pedido llego incompleto al TPV antes de esta version, la nota pide
+  revisarlo a mano.
+
+- **Pedidos que se habian quedado fuera.** Los pedidos pagados que el conector
+  descarto por no tener sus productos enlazados se envian ahora solos, una vez.
+  Llevan una nota «Recuperado» que lo explica.
+
+- **Quien factura.** El panel avisa de que las facturas de las ventas online
+  las emite el TPV: no hay que emitirlas tambien desde WooCommerce.
+
 - **Reintentos que se multiplicaban.** Cuando un envio de pedido o de
   reembolso fallaba y se reintentaba, cada intento creaba otro en la cola.
   Ahora hay uno solo, que cuenta sus intentos.
