@@ -436,28 +436,22 @@ function run_resuscripcion_tests(WooTestRunner $t): void
     });
 
     $t->test('la lista incluye el evento de stock por variante', function ($t) {
-        $t->assert(in_array('variant.stock_adjusted', TPV_Sync_Admin::eventosSuscritos(true, true), true),
+        $t->assert(in_array('variant.stock_adjusted', TPV_Sync_Admin::eventosSuscritos(true), true),
             'sin él, vender una talla en caja no baja el stock online');
     });
 
     $t->test('y los de siempre', function ($t) {
-        $ev = TPV_Sync_Admin::eventosSuscritos(true, true);
-        foreach (['product.created', 'stock.adjusted', 'order.created', 'customer.created'] as $e) {
+        $ev = TPV_Sync_Admin::eventosSuscritos(true);
+        foreach (['product.created', 'stock.adjusted', 'customer.created'] as $e) {
             $t->assert(in_array($e, $ev, true), "falta $e");
         }
     });
 
     $t->test('sin módulo de catálogo no se piden eventos de catálogo', function ($t) {
-        $ev = TPV_Sync_Admin::eventosSuscritos(false, true);
+        $ev = TPV_Sync_Admin::eventosSuscritos(false);
         $t->assert(!in_array('variant.stock_adjusted', $ev, true), 'catálogo desactivado: ni variantes');
         $t->assert(!in_array('product.created', $ev, true), 'ni altas de producto');
-        $t->assert(in_array('order.created', $ev, true), 'pero los pedidos siguen');
-    });
-
-    $t->test('sin módulo de pedidos no se piden eventos de pedidos', function ($t) {
-        $ev = TPV_Sync_Admin::eventosSuscritos(true, false);
-        $t->assert(!in_array('order.created', $ev, true), 'pedidos desactivados');
-        $t->assert(in_array('stock.adjusted', $ev, true), 'pero el catálogo sigue');
+        $t->assert(in_array('customer.created', $ev, true), 'pero los clientes siguen');
     });
 
     // ── ¿Hay que tocar el webhook del TPV? ───────────────────────────────
@@ -516,7 +510,7 @@ function run_lista_unica_tests(WooTestRunner $t): void
     });
 
     $t->test('esa fuente incluye el evento de stock por variante', function ($t) {
-        $t->assert(in_array('variant.stock_adjusted', TPV_Sync_Admin::eventosSuscritos(true, true), true),
+        $t->assert(in_array('variant.stock_adjusted', TPV_Sync_Admin::eventosSuscritos(true), true),
             'si falta aquí, falta en los dos caminos a la vez');
     });
 }
@@ -805,101 +799,6 @@ function run_webhook_version_tests(WooTestRunner $t): void
             $t->assert(in_array($campo, $delTpv, true),
                 "el conector lee '$campo' y el payload v2 no lo trae: aceptar la v2 sería temerario");
         }
-    });
-}
-
-/**
- * Una devolución del TPV no reponía el stock en la tienda. Y ni siquiera
- * llegaba a intentarlo.
- *
- * Reproducido en un WordPress real el 23-09-2026:
- *
- *     stock inicial      10
- *     vendes 2 uds        8
- *     devolución          8   ← no repone
- *
- * DOS fallos encadenados:
- *
- * 1) handle_return() salía antes de hacer nada:
- *
- *        $total = (float)($fields['total'] ?? 0);
- *        if ($total <= 0) return;
- *
- *    pero el evento `return.created` del TPV trae `order_id`, `product_id` y
- *    `quantity` — NO trae `total` (ReturnController::logEvent). Así que toda
- *    devolución hecha en caja se descartaba en silencio.
- *
- * 2) Aun pasando ese guard, `wc_create_refund()` se llamaba solo con el
- *    importe. En WooCommerce `restock_items` es false por defecto y
- *    `line_items` un array vacío: sin ellos NO hay reposición. Se devolvía el
- *    dinero y el stock se quedaba perdido, acumulando error en cada
- *    devolución.
- *
- * El arreglo usa lo que el evento SÍ trae: product_id + quantity, que permite
- * reponer la cantidad exacta de la línea correcta en vez de adivinar por
- * importe.
- */
-function run_devolucion_stock_tests(WooTestRunner $t): void
-{
-    $t->suite('Una devolución del TPV repone el stock');
-
-    // class-webhook-handler.php engancha hooks de WP al cargarse: se aísla el
-    // método puro, que es donde vive la decisión.
-    if (!class_exists('DecisorDevolucion')) {
-        $src = (string) file_get_contents(dirname(__DIR__) . '/includes/class-webhook-handler.php');
-        preg_match('/public static function lineaADevolver.*?\n    \}/s', $src, $m);
-        eval('class DecisorDevolucion { ' . ($m[0] ?? 'public static function lineaADevolver($a,$b,$c){return null;}') . ' }');
-    }
-
-    // ── Lo que el evento trae de verdad ──────────────────────────────────
-    $t->test('el evento del TPV trae product_id y quantity, no total', function ($t) {
-        // Forma real de ReturnController::logEvent.
-        $evento = ['order_id' => 9001, 'product_id' => 42, 'quantity' => 2];
-        $t->assert(!isset($evento['total']),
-            'el guard exigía un total que el TPV nunca manda: toda devolución se descartaba');
-        $t->assert(isset($evento['product_id'], $evento['quantity']),
-            'lo que sí trae permite reponer la cantidad exacta');
-    });
-
-    // ── La decisión: qué línea se devuelve y cuánta cantidad ─────────────
-    $t->test('se identifica la línea por el producto del TPV', function ($t) {
-        // Líneas del pedido WC: [item_id => tpv_product_id]
-        $lineas = [11 => 42, 12 => 77];
-        $r = DecisorDevolucion::lineaADevolver($lineas, 42, 2.0);
-        $t->assert($r !== null, 'debe encontrar la línea');
-        $t->assert($r['item_id'] === 11, 'la línea del producto 42, no otra');
-        $t->assert($r['qty'] === 2.0, 'la cantidad que dice el evento');
-    });
-
-    $t->test('un producto que no está en el pedido no se inventa', function ($t) {
-        $t->assert(DecisorDevolucion::lineaADevolver([11 => 42], 99, 1.0) === null,
-            'devolver una línea que no existe corrompería el pedido');
-    });
-
-    $t->test('cantidad cero o negativa no genera devolución', function ($t) {
-        $t->assert(DecisorDevolucion::lineaADevolver([11 => 42], 42, 0.0) === null, 'cero');
-        $t->assert(DecisorDevolucion::lineaADevolver([11 => 42], 42, -3.0) === null, 'negativa');
-    });
-
-    // ── El contrato con WooCommerce ──────────────────────────────────────
-    $t->test('el refund pide reponer stock explícitamente', function ($t) {
-        // Los argumentos se arman en $args y se pasan a wc_create_refund();
-        // se comprueba el bloque de handle_return() entero.
-        $src = (string) file_get_contents(dirname(__DIR__) . '/includes/class-webhook-handler.php');
-        preg_match('/private function handle_return.*?\n    \}/s', $src, $m);
-        $cuerpo = $m[0] ?? '';
-        $t->assert(str_contains($cuerpo, "'restock_items' => true"),
-            'sin restock_items WooCommerce NO repone: es false por defecto');
-        $t->assert(str_contains($cuerpo, "'line_items'"),
-            'sin line_items no sabe QUÉ reponer');
-        $t->assert(str_contains($cuerpo, 'wc_create_refund($args)'),
-            'los argumentos armados son los que se mandan');
-    });
-
-    $t->test('sigue marcando el origen para no rebotar al TPV', function ($t) {
-        $src = (string) file_get_contents(dirname(__DIR__) . '/includes/class-webhook-handler.php');
-        $t->assert(str_contains($src, '_tpv_refund_origin'),
-            'sin la marca, on_wc_refund reenviaría la devolución al TPV: bucle');
     });
 }
 

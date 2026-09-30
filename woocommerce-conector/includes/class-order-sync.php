@@ -6,8 +6,10 @@ declare(strict_types=1);
  * Módulo Pedidos:
  *  - WC → TPV: crea pedido en el TPV cuando se procesa el pago
  *  - WC → TPV: propaga cambios de estado (cancelación, reembolso)
- *  - TPV → WC: el webhook handler llama a update_wc_status() cuando
- *              el TPV cambia el estado de un pedido online
+ *
+ * El amo de un pedido online es la tienda: el TPV recibe la venta y lo que la
+ * corrige desde la tienda, pero no la gestiona (decisión del 30-09-2026). No
+ * hay camino TPV → WC para pedidos.
  */
 defined('ABSPATH') || exit;
 
@@ -31,17 +33,6 @@ class TPV_Sync_Order_Sync
         'cancelled'  => 7,  // Cancelado
         'refunded'   => 11, // Dinero devuelto
         'failed'     => 7,  // Cancelado
-    ];
-
-    // Mapa TPV order_status_id → WC status
-    const TPV_TO_WC_STATUS = [
-        1  => 'pending',
-        2  => 'processing',
-        3  => 'processing', // Enviado → en proceso en WC (WC no tiene "enviado" nativo)
-        5  => 'completed',
-        7  => 'cancelled',
-        11 => 'refunded',
-        14 => 'cancelled',  // Expirado → cancelado
     ];
 
     /**
@@ -356,17 +347,12 @@ class TPV_Sync_Order_Sync
 
     /**
      * Hook: woocommerce_order_status_changed
-     * Propaga al TPV cuando el estado cambia en WooCommerce.
-     * No propaga si el cambio fue iniciado desde el TPV (evita bucle).
+     * Propaga al TPV cuando el estado cambia en WooCommerce (una cancelación
+     * tiene que devolver el stock y corregir la caja del TPV). Solo en este
+     * sentido: el TPV no cambia el estado de un pedido de la tienda.
      */
     public function on_wc_status_changed(int $wcOrderId, string $from, string $to): void
     {
-        // Si el cambio lo inició el TPV, no lo devolvemos (evita bucle)
-        if (get_post_meta($wcOrderId, '_tpv_status_origin', true) === 'tpv') {
-            delete_post_meta($wcOrderId, '_tpv_status_origin');
-            return;
-        }
-
         $tpvOrderId = (int)get_post_meta($wcOrderId, self::TPV_ORDER_META, true);
         if (!$tpvOrderId) return;
 
@@ -388,17 +374,10 @@ class TPV_Sync_Order_Sync
      * Cuando se crea un reembolso en WC (total o parcial), registramos la
      * devolución en el TPV como return nativo por cada línea refundada.
      *
-     * Un origen TPV (flag `_tpv_refund_origin`=tpv) corta el bucle: ese refund
-     * lo creó el webhook handler y no debe reenviarse.
      */
     public function on_wc_refund(int $wcOrderId, int $refundId): void
     {
-        // 1) origen TPV — lo creó el webhook handler, no reenviar
-        if (get_post_meta($refundId, '_tpv_refund_origin', true) === 'tpv') {
-            delete_post_meta($refundId, '_tpv_refund_origin');
-            return;
-        }
-        // 2) idempotencia: ya propagado
+        // Idempotencia: ya propagado
         if (get_post_meta($refundId, '_tpv_refund_synced', true)) {
             return;
         }
@@ -594,37 +573,6 @@ class TPV_Sync_Order_Sync
         }
         update_option('tpv_sync_devoluciones_cursor', end($ids), false);
         return $hechas;
-    }
-
-    // ─── TPV → WC: actualizar estado ─────────────────────────────────────────
-
-    /**
-     * Llamado desde el webhook handler cuando el TPV cambia el estado
-     * de un pedido que vino de WooCommerce.
-     */
-    public function update_wc_status(int $tpvOrderId, int $tpvStatusId): void
-    {
-        global $wpdb;
-
-        $wcOrderId = (int)$wpdb->get_var($wpdb->prepare(
-            "SELECT post_id FROM {$wpdb->postmeta}
-             WHERE meta_key = %s AND meta_value = %d LIMIT 1",
-            self::TPV_ORDER_META, $tpvOrderId
-        ));
-
-        if (!$wcOrderId) return;
-
-        $wcStatus = self::TPV_TO_WC_STATUS[$tpvStatusId] ?? null;
-        if (!$wcStatus) return;
-
-        $order = wc_get_order($wcOrderId);
-        if (!$order) return;
-
-        // Marcar que el cambio viene del TPV para no crear bucle
-        update_post_meta($wcOrderId, '_tpv_status_origin', 'tpv');
-        $order->update_status($wcStatus, 'Estado actualizado desde el TPV.');
-
-        $this->log($wcOrderId, 'ok', "Estado TPV {$tpvStatusId} → WC '{$wcStatus}'");
     }
 
     // ─── Log ──────────────────────────────────────────────────────────────────
