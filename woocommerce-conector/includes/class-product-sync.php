@@ -1292,8 +1292,14 @@ class TPV_Sync_Product_Sync
      * Presupuesto de tiempo: el hosting corta procesos largos; al agotarse se
      * guarda el cursor y la siguiente pasada sigue. Siempre procesa al menos
      * un producto, para avanzar aunque uno solo tarde más que el presupuesto.
+     *
+     * Lo que limita una pasada es el TIEMPO, no el número: WP-Cron solo corre
+     * cuando alguien visita la web, y con 25 productos por pasada una tienda
+     * con poco tráfico tardaba días (lulubeauty, 30-09-2026: 3 visitas en 3
+     * horas, 75 de ~850). Revisar un producto sin nada pendiente cuesta
+     * milisegundos, así que $lote es solo el tope de la consulta.
      */
-    public function autocurar(int $lote = 25, float $presupuestoSeg = 20.0): array
+    public function autocurar(int $lote = 500, float $presupuestoSeg = 20.0): array
     {
         $stats = ['revisados' => 0, 'enlazados' => 0, 'sin_pareja' => 0,
                   'con_imagenes' => 0, 'vuelta_completa' => false, 'ocupado' => false];

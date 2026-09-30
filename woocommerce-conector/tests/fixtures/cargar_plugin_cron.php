@@ -53,7 +53,16 @@ foreach ($GLOBALS['__rec']['filtros']['cron_schedules'] ?? [] as $cb) { $interva
 // Desactivación: solo interesa qué limpia; la API de verdad no está.
 try { ($GLOBALS['__desactivar'] ?? fn () => null)(); } catch (Throwable $e) {}
 
+// Actualización automática: lo que contesta el filtro para este plugin y otro.
+$nuestro = basename(dirname(__DIR__, 2)) . '/woocommerce-conector.php';
+$auto = ['nuestro' => false, 'ajeno' => false];
+foreach ($GLOBALS['__rec']['filtros']['auto_update_plugin'] ?? [] as $cb) {
+    $auto['nuestro'] = $cb($auto['nuestro'], (object) ['plugin' => $nuestro]);
+    $auto['ajeno']   = $cb($auto['ajeno'], (object) ['plugin' => 'akismet/akismet.php']);
+}
+
 echo json_encode([
+    'auto_update' => $auto,
     'acciones'   => array_keys($GLOBALS['__rec']['acciones']),
     'programados'=> $GLOBALS['__rec']['programados'],
     'intervalos' => array_keys($intervalos),

@@ -179,3 +179,41 @@ function run_cache_actualizador_tests(WooTestRunner $t): void
             'el hook nuevo tiene que borrar la misma clave que se guarda');
     });
 }
+
+/**
+ * La versión nueva se INSTALA sola, no solo se ofrece (30-09-2026).
+ *
+ * El actualizador solo contestaba a WordPress «hay una 2.9.0»: instalarla
+ * dependía de que la tienda tuviera activado «Activar actualizaciones
+ * automáticas» para este plugin. lulubeauty no lo tenía y se quedó en la 2.7.0
+ * con la autocuración (2.8.0) y los arreglos de pedidos (2.9.0) publicados:
+ * para que llegaran había que entrar a su WordPress, justo lo que la
+ * autocuración quería evitar. Decisión del usuario: el plugin se marca a sí
+ * mismo para actualizarse solo. Solo a sí mismo: los demás plugins, como estén.
+ */
+function run_actualizacion_forzada_tests(WooTestRunner $t): void
+{
+    $t->suite('Actualizador — la versión nueva se instala sola');
+    $nuestro = 'woocommerce-conector/woocommerce-conector.php';
+
+    $t->test('para este plugin, WordPress actualiza solo aunque la tienda no lo marcara', function ($t) use ($nuestro) {
+        foreach ([false, null] as $antes) {
+            $t->assert(TPV_Sync_Updater::debeAutoActualizar($antes, (object) ['plugin' => $nuestro], $nuestro) === true,
+                'con ' . var_export($antes, true) . ' la tienda se queda en la versión vieja');
+        }
+    });
+
+    $t->test('a los demás plugins no se les cambia nada', function ($t) use ($nuestro) {
+        $otro = (object) ['plugin' => 'akismet/akismet.php'];
+        $t->assert(TPV_Sync_Updater::debeAutoActualizar(false, $otro, $nuestro) === false, 'no activar ajenos');
+        $t->assert(TPV_Sync_Updater::debeAutoActualizar(true, $otro, $nuestro) === true, 'ni desactivar ajenos');
+        $t->assert(TPV_Sync_Updater::debeAutoActualizar(null, $otro, $nuestro) === null, 'ni cambiar su «sin opinión»');
+    });
+
+    $t->test('un item raro (sin plugin, o no objeto) no se toca', function ($t) use ($nuestro) {
+        $t->assert(TPV_Sync_Updater::debeAutoActualizar(false, (object) [], $nuestro) === false, 'sin plugin');
+        $t->assert(TPV_Sync_Updater::debeAutoActualizar(false, null, $nuestro) === false, 'null');
+        $t->assert(TPV_Sync_Updater::debeAutoActualizar(false, 'basura', $nuestro) === false, 'no objeto');
+    });
+}
+
