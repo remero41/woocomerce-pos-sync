@@ -1,3 +1,21 @@
+## Sin publicar
+
+### Las versiones nuevas se instalan solas
+
+- Hasta ahora el conector avisaba de que habia una version nueva, pero solo se
+  instalaba sola si en la tienda estaba activado «Actualizaciones
+  automaticas» para el plugin. Si no, la tienda se quedaba en la version que
+  tenia hasta que alguien entrara a actualizarla. Ahora el conector se
+  actualiza solo (y solo el: los demas plugins siguen como esten).
+
+### La reparación del catálogo no depende de tener muchas visitas
+
+- La reparación automática (enlaces y fotos) avanzaba 25 productos cada vez
+  que WordPress ejecutaba sus tareas, y WordPress solo lo hace cuando alguien
+  visita la web. En una tienda con pocas visitas tardaba dias. Ahora cada
+  pasada trabaja durante un tiempo fijo en vez de un numero fijo de productos:
+  los que no tienen nada pendiente se revisan en milisegundos.
+
 ## 2.9.0
 
 ### Un pedido de la tienda ya nunca llega a medias al TPV
