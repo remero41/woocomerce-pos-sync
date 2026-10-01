@@ -1,3 +1,19 @@
+## Sin publicar
+
+### La tienda cobra solo lo mismo que la web
+
+- **Los precios de la tienda se corrigen solos.** Cada 6 horas el conector
+  compara lo que cobra la web a un cliente de España con lo que cobra el TPV
+  y, si no coincide, corrige el precio del TPV (y su rebaja, si la web está
+  rebajada). No hay que pulsar nada. Una promoción puesta solo en el TPV se
+  respeta. Necesita la API del TPV actualizada y el catálogo mandado por la
+  tienda.
+
+- **El panel lo cuenta.** En «Estado de la sincronización» se ve el resultado
+  de la última revisión: cuántos precios se corrigieron y, si alguno no se
+  pudo igualar, cuáles. También avisa si una clase de impuesto de WooCommerce
+  no tiene tarifa para España (WooCommerce no suma IVA a esos productos).
+
 ## 2.10.0
 
 ### El mismo precio en la web y en la tienda física

@@ -148,6 +148,9 @@ function autocura_tienda(array $productos, array $opciones = []): void
         'tpv_sync_api_url'        => 'https://tpv.test/api/v1',
         'tpv_sync_client_id'      => 'wc_x',
         'tpv_sync_client_secret'  => 's',
+        // Precios revisados hace nada: estos tests son de enlaces e imágenes
+        // (la revisión de precios tiene los suyos en test_pvp_cuadre.php).
+        'tpv_sync_pvp_cuadre'     => ['ultima' => ['fecha' => gmdate('Y-m-d H:i:s')]],
     ];
     foreach ($productos as $id => [$sku, $thumb, $gal, $enlace]) {
         $GLOBALS['__wp_posts'][$id] = (object) ['ID' => $id, 'post_type' => 'product',

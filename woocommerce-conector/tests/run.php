@@ -137,6 +137,7 @@ require_once __DIR__ . '/test_recuperar_pedidos.php';
 require_once __DIR__ . '/test_aviso_facturacion.php';
 require_once __DIR__ . '/test_sin_gestion_pedidos_tpv.php';
 require_once __DIR__ . '/test_pvp.php';
+require_once __DIR__ . '/test_pvp_cuadre.php';
 require_once dirname(__DIR__) . '/includes/class-order-sync.php';
 require_once dirname(__DIR__) . '/includes/class-admin.php';
 
@@ -179,5 +180,6 @@ run_aviso_facturacion_tests($t);
 run_sin_gestion_pedidos_tpv_tests($t);
 run_stock_tpv_a_woo_tests($t);
 run_pvp_tests($t);
+run_pvp_cuadre_tests($t);
 
 exit($t->summary());

@@ -1377,7 +1377,8 @@ class TPV_Sync_Product_Sync
     public function autocurar(int $lote = 500, float $presupuestoSeg = 20.0): array
     {
         $stats = ['revisados' => 0, 'enlazados' => 0, 'sin_pareja' => 0,
-                  'con_imagenes' => 0, 'vuelta_completa' => false, 'ocupado' => false];
+                  'con_imagenes' => 0, 'pvp_corregidos' => 0, 'pvp_atascados' => 0,
+                  'vuelta_completa' => false, 'ocupado' => false];
 
         if (!tpv_sync_module_catalog() || !$this->api->isConfigured()) {
             return $stats;
@@ -1403,11 +1404,26 @@ class TPV_Sync_Product_Sync
                 $cursor, $lote
             )));
 
+            $cuadre = self::cuadreGuardado();
             if (empty($ids)) {
                 update_option('tpv_sync_autocura_cursor', 0, false);
+                // Una vuelta con revisión de precios pasa a ser la que enseña
+                // el panel; la siguiente empieza de cero.
+                update_option('tpv_sync_pvp_cuadre', [
+                    'vuelta' => self::cuadreVacio(),
+                    'ultima' => $cuadre['vuelta']['con_pvp']
+                        ? $cuadre['vuelta'] + ['fecha' => gmdate('Y-m-d H:i:s')]
+                        : $cuadre['ultima'],
+                ], false);
                 $stats['vuelta_completa'] = true;
                 return $stats;
             }
+            if ($cursor === 0) {
+                // Al empezar la vuelta se decide si revisa precios: leerlos
+                // cuesta el catálogo entero del TPV, y no hace falta cada 5 min.
+                $cuadre['vuelta'] = ['con_pvp' => self::tocaRevisarPvp($cuadre['ultima'])] + self::cuadreVacio();
+            }
+            $pvp = ['activo' => $cuadre['vuelta']['con_pvp'] ? null : false, 'indice' => null];
 
             $imagenes = get_option('tpv_sync_principal', '') !== 'tpv';
             $indice   = null;   // el catálogo del TPV solo se pide si hace falta
@@ -1459,13 +1475,166 @@ class TPV_Sync_Product_Sync
                         $stats['con_imagenes']++;
                     }
                 }
+
+                if ($product) {
+                    $this->cuadrarPvp($postId, $product, $tpvId, $pvp, $stats, $cuadre['vuelta']);
+                }
             }
 
             update_option('tpv_sync_autocura_cursor', $cursor, false);
+            update_option('tpv_sync_pvp_cuadre', $cuadre, false);
             return $stats;
         } finally {
             delete_option($candado);
         }
+    }
+
+    // ─── La web y la caja cobran lo mismo (SPEC_pvp_tienda_caja, fase 2) ──────
+
+    /** Máximo de ejemplos «no cuadra» que enseña el panel. */
+    const PVP_EJEMPLOS = 5;
+
+    /** Cada cuánto se revisan los precios (una vuelta entera). */
+    const PVP_CADA_SEG = 6 * 3600;
+
+    private static function cuadreVacio(): array
+    {
+        return ['con_pvp' => false, 'revisados' => 0, 'corregidos' => 0, 'atascados' => 0,
+                'ejemplos' => [], 'sin_iva' => []];
+    }
+
+    private static function tocaRevisarPvp(?array $ultima): bool
+    {
+        $fecha = is_array($ultima) ? strtotime(($ultima['fecha'] ?? '') . ' UTC') : false;
+        return $fecha === false || time() - $fecha >= self::PVP_CADA_SEG;
+    }
+
+    /** La vuelta en curso y la última acabada (la que enseña el panel). */
+    public static function cuadreGuardado(): array
+    {
+        $g = get_option('tpv_sync_pvp_cuadre', []);
+        $g = is_array($g) ? $g : [];
+        return [
+            'vuelta' => (is_array($g['vuelta'] ?? null) ? $g['vuelta'] : []) + self::cuadreVacio(),
+            'ultima' => is_array($g['ultima'] ?? null) ? $g['ultima'] : null,
+        ];
+    }
+
+    /**
+     * Si la web no cobra lo mismo que la caja, corrige la caja con lo que
+     * COBRA la web (decisión del usuario, 30-09-2026: automático, sin botón y
+     * sin freno). Solo productos simples, con una API que acepta precios con
+     * IVA y con el catálogo mandado por la tienda.
+     *
+     * Sin bucles: si ya se corrigió con estos mismos precios de la web y la
+     * caja sigue sin cuadrar, no se repite: se cuenta como «no cuadra» para
+     * el panel. Si la web cambia, se vuelve a intentar.
+     */
+    private function cuadrarPvp(int $postId, $product, int $tpvId, array &$pvp, array &$stats, array &$vuelta): void
+    {
+        if (!$product->is_type('simple')) {
+            return;
+        }
+        if ($pvp['activo'] === null) {
+            $pvp['activo'] = get_option('tpv_sync_principal', '') !== 'tpv' && $this->api->aceptaPrecioConIva();
+        }
+        if (!$pvp['activo']) {
+            return;
+        }
+        $this->contarSinIva($product, $vuelta);
+        $pvp['indice'] ??= $this->getTpvPvpIndex();
+        // Producto que el TPV ya no tiene (o que no llegó a leerse): no hay
+        // con qué comparar.
+        if (!isset($pvp['indice'][$tpvId])) {
+            return;
+        }
+        [$tpvPrecio, $tpvRebaja] = $pvp['indice'][$tpvId];
+
+        $web = $this->pvpParaTpv($product, (float) $product->get_regular_price());
+        $rebajado = method_exists($product, 'is_on_sale') && $product->is_on_sale()
+            && (float) $product->get_sale_price() > 0;
+        $webRebaja = $rebajado ? $this->pvpParaTpv($product, (float) $product->get_sale_price()) : null;
+        $vuelta['revisados']++;
+
+        if (TPV_Sync_Precio_Pvp::cuadra($web, $webRebaja, $tpvPrecio, $tpvRebaja)) {
+            delete_post_meta($postId, '_tpv_pvp_corregido');
+            return;
+        }
+        $firma = $web . '|' . ($webRebaja ?? '');
+        if ((string) get_post_meta($postId, '_tpv_pvp_corregido', true) !== $firma
+            && $this->push_wc_product_to_tpv($postId)) {
+            update_post_meta($postId, '_tpv_pvp_corregido', $firma);
+            $stats['pvp_corregidos']++;
+            $vuelta['corregidos']++;
+            $this->log('ok', $tpvId, "Precio corregido: la web cobra $web y la caja cobraba $tpvPrecio (post=$postId)");
+            return;
+        }
+        $stats['pvp_atascados']++;
+        $vuelta['atascados']++;
+        if (count($vuelta['ejemplos']) < self::PVP_EJEMPLOS) {
+            $post = get_post($postId);
+            $vuelta['ejemplos'][] = [
+                'sku'    => (string) $product->get_sku(),
+                'nombre' => $post ? (string) $post->post_title : '',
+                'web'    => $web,
+                'caja'   => $tpvPrecio,
+            ];
+        }
+    }
+
+    /**
+     * Productos gravados cuya clase de impuesto de Woo no tiene tarifa para la
+     * dirección de la tienda: Woo no les suma IVA. La caja cobra lo mismo que
+     * la web (IVA incluido), pero la tienda debería saberlo.
+     */
+    private function contarSinIva($product, array &$vuelta): void
+    {
+        if (get_option('woocommerce_calc_taxes', 'no') !== 'yes' || !class_exists('WC_Tax')
+            || (method_exists($product, 'get_tax_status') && $product->get_tax_status() !== 'taxable')) {
+            return;
+        }
+        $clase = method_exists($product, 'get_tax_class') ? (string) $product->get_tax_class() : '';
+        if (empty(WC_Tax::get_base_tax_rates($clase))) {
+            $vuelta['sin_iva'][$clase] = ($vuelta['sin_iva'][$clase] ?? 0) + 1;
+        }
+    }
+
+    /**
+     * Lo que cobra la caja, producto a producto: [tpvId => [precio, rebaja|null]],
+     * con IVA y con el cálculo de la caja. Si una página falla se queda con lo
+     * leído: cada dato es bueno, y lo que falta simplemente no se compara.
+     */
+    private function getTpvPvpIndex(): array
+    {
+        $indice = [];
+        $cursor = null;
+        $vistos = [];
+        do {
+            $params = ['per_page' => 200, 'fields' => 'product_id,price,special_price'];
+            if ($cursor !== null) {
+                $params['cursor'] = $cursor;
+            }
+            $r = $this->api->getConIva('/products', $params);
+            if (!TPV_Sync_API_Client::fueBien($r)) {
+                $this->log('error', 0, 'Revisión de precios: el TPV no devolvió el catálogo');
+                break;
+            }
+            foreach ((array) ($r['data'] ?? []) as $fila) {
+                // Sin precio no hay con qué comparar: leerlo como 0 € «corregiría»
+                // el producto a lo loco.
+                if (isset($fila['price'])) {
+                    $indice[(int) ($fila['product_id'] ?? 0)] = [(float) $fila['price'],
+                        isset($fila['special_price']) ? (float) $fila['special_price'] : null];
+                }
+            }
+            $cursor = $r['meta']['cursor'] ?? null;
+            // Un cursor repetido sería un bucle infinito, no un catálogo grande.
+            if ($cursor !== null && isset($vistos[$cursor])) {
+                break;
+            }
+            $vistos[(string) $cursor] = true;
+        } while ($cursor !== null);
+        return $indice;
     }
 
     /**
