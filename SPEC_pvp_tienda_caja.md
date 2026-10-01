@@ -95,10 +95,15 @@ Además: una variante con precio propio; una rebaja con y sin fechas; ida y vuel
 
 - **P2, lectura TPV → Woo con los impuestos desactivados en Woo.** El spec pedía `gross`. Pero el código tiene una nota del **28-04-2026**: «el plugin siempre pedía gross aunque WC tuviera impuestos OFF, resultando en precios inflados un 21 %». Fue una decisión tomada por un caso real, y cambiarla movería precios visibles en webs que hoy no se quejan. No se toca hasta que el usuario decida.
 
-**Fase 2 (pendiente)**:
+**Fase 2: HECHA (30-09-2026, sin commit)**. Decisión del usuario: **sin freno de cambios masivos, sin aviso al CP y sin deshacer** («si la cliente se equivoca subiendo impuestos, que se joda»). La web manda.
 
-- P4, el diagnóstico en el panel («N productos cobran distinto») y el aviso «tu web enseña un precio distinto del que cobra».
-- D3, la corrección automática al actualizar, con sus frenos: solo con la configuración coherente, freno de cambios masivos, se puede deshacer y avisa al CP.
+- La comparación va dentro de `autocurar()` (cursor, candado y presupuesto de tiempo ya existían), **una vuelta cada 6 h**: leer los precios cuesta el catálogo entero del TPV (`getConIva`, `X-Price-Format: gross`, sea cual sea la configuración de Woo).
+- Regla pura `TPV_Sync_Precio_Pvp::cuadra()`: el precio normal coincide siempre; la rebaja, solo si la web está rebajada (una promoción puesta solo en caja no es un descuadre).
+- Si no cuadra, se reenvía el producto por el guardado de la fase 1 (PVP + rebaja). Solo simples, con la API nueva y el catálogo mandado por la tienda.
+- Sin bucles: `_tpv_pvp_corregido` guarda los precios de la web con los que se corrigió; si siguen iguales y no cuadra, no se repite y cuenta como «no se pudo igualar».
+- Panel («Estado de la sincronización»): resultado de la última vuelta con revisión (corregidos, los que no se pudieron igualar con ejemplos) y aviso de clases de impuesto de Woo sin tarifa para España.
+- Tests: 702/702 y ~30 mutantes muertos.
+- **Queda fuera:** el aviso «tu web enseña un precio distinto del que cobra» (lo que ve un visitante sin dirección frente a lo que se cobra a España): no se puede calcular con fiabilidad desde el cron; los productos variables; PrestaShop.
 
 ## 5. Decisiones del usuario (antes de programar)
 

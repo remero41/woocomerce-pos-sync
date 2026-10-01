@@ -281,6 +281,9 @@ class TPV_Sync_Admin
         .cc-health-value.cc-h-ok   { color: var(--cc-success-ink); }
         .cc-health-value.cc-h-warn { color: var(--cc-warn); }
         .cc-health-value.cc-h-err  { color: var(--cc-danger); }
+        .cc-health-pvp { margin: 14px 0 0; padding-top: 12px; border-top: 1px solid var(--cc-border-soft); font-size: 13px; }
+        .cc-health-pvp p { margin: 6px 0 0; }
+        .cc-health-pvp ul { margin: 6px 0 0 18px; list-style: disc; }
         .cc-health-lasterr {
             margin: 12px 0 0; font-size: 12px; color: var(--cc-muted);
             display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;
@@ -1962,6 +1965,53 @@ class TPV_Sync_Admin
                 <code><?= esc_html(mb_substr((string) $h['last_error']['message'], 0, 180)) ?></code>
                 <span class="cc-health-when"><?= esc_html($h['last_error']['created_at'] ?? '') ?></span>
             </p>
+            <?php endif; ?>
+            <?php /* ── ¿Cobran lo mismo la web y la tienda? (SPEC_pvp_tienda_caja, fase 2)
+                 La autocuración compara cada 6 h lo que cobra la web con lo que
+                 cobra el TPV y corrige el TPV sola. Aquí solo se cuenta el
+                 resultado de la última revisión: la tienda no tiene que hacer
+                 nada salvo en los avisos de configuración de su Woo. */
+            $pvpUltima = class_exists('TPV_Sync_Product_Sync') ? (TPV_Sync_Product_Sync::cuadreGuardado()['ultima'] ?? null) : null;
+            if (is_array($pvpUltima) && isset($pvpUltima['revisados'])):
+                $pvpHace = $ago(max(0, time() - (int) strtotime(($pvpUltima['fecha'] ?? '') . ' UTC')));
+                $euros = fn ($v): string => number_format((float) $v, 2, ',', '.') . ' €';
+            ?>
+            <div class="cc-health-pvp">
+                <strong><?= esc_html__('Precios de la web y de la tienda', 'tpv-sync') ?></strong>
+                <?php if ((int) $pvpUltima['atascados'] === 0): ?>
+                <p class="cc-h-ok"><?= esc_html(sprintf(
+                    __('Cobran lo mismo (%1$d productos revisados %2$s).', 'tpv-sync'),
+                    (int) $pvpUltima['revisados'], $pvpHace
+                )) ?><?php if ((int) $pvpUltima['corregidos'] > 0): ?> <?= esc_html(sprintf(
+                    _n('Se corrigió %d precio de la tienda para que cobre lo mismo que la web.',
+                       'Se corrigieron %d precios de la tienda para que cobre lo mismo que la web.',
+                       (int) $pvpUltima['corregidos'], 'tpv-sync'),
+                    (int) $pvpUltima['corregidos']
+                )) ?><?php endif; ?></p>
+                <?php else: ?>
+                <p class="cc-h-warn"><?= esc_html(sprintf(
+                    _n('%1$d producto cobra distinto en la web y en la tienda y no se ha podido igualar (revisión %2$s):',
+                       '%1$d productos cobran distinto en la web y en la tienda y no se han podido igualar (revisión %2$s):',
+                       (int) $pvpUltima['atascados'], 'tpv-sync'),
+                    (int) $pvpUltima['atascados'], $pvpHace
+                )) ?></p>
+                <ul>
+                    <?php foreach ((array) ($pvpUltima['ejemplos'] ?? []) as $ej): ?>
+                    <li><?= esc_html(sprintf(__('%1$s %2$s: web %3$s · tienda %4$s', 'tpv-sync'),
+                        $ej['sku'] ?? '', $ej['nombre'] ?? '', $euros($ej['web'] ?? 0), $euros($ej['caja'] ?? 0))) ?></li>
+                    <?php endforeach; ?>
+                </ul>
+                <p><?= esc_html__('Si en la próxima revisión sigue igual, escríbenos a soporte.', 'tpv-sync') ?></p>
+                <?php endif; ?>
+                <?php foreach ((array) ($pvpUltima['sin_iva'] ?? []) as $clase => $n): ?>
+                <p class="cc-h-warn"><?= esc_html(sprintf(
+                    _n('La clase de impuesto «%1$s» no tiene tarifa para España: WooCommerce no suma IVA a %2$d producto. La tienda cobra el mismo precio, con el IVA incluido. Revísalo en WooCommerce → Ajustes → Impuestos.',
+                       'La clase de impuesto «%1$s» no tiene tarifa para España: WooCommerce no suma IVA a %2$d productos. La tienda cobra el mismo precio, con el IVA incluido. Revísalo en WooCommerce → Ajustes → Impuestos.',
+                       (int) $n, 'tpv-sync'),
+                    $clase === '' ? __('Estándar', 'tpv-sync') : (string) $clase, (int) $n
+                )) ?></p>
+                <?php endforeach; ?>
+            </div>
             <?php endif; ?>
         </div>
         <?php endif; ?>

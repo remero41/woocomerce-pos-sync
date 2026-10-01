@@ -96,16 +96,31 @@ class TPV_Sync_API_Client
 
     public function get(string $path, array $params = []): array
     {
+        return $this->getCon($path, $params, []);
+    }
+
+    /**
+     * GET con los precios CON IVA, sea cual sea la configuración de Woo. Para
+     * comparar lo que cobra la caja con lo que cobra la web (el PVP): con la
+     * cabecera de siempre, una tienda con precios sin IVA leería la base.
+     */
+    public function getConIva(string $path, array $params = []): array
+    {
+        return $this->getCon($path, $params, ['X-Price-Format' => 'gross']);
+    }
+
+    private function getCon(string $path, array $params, array $cabeceras): array
+    {
         if ($this->breaker && !$this->breaker->allowRequest()) {
             return ['error' => 'circuit_open', 'errors' => [['error' => 'circuit_open', 'message' => 'Circuit breaker abierto — backend indispuesto']]];
         }
         $url = $this->baseUrl . $path;
         if ($params) $url .= '?' . http_build_query($params);
 
-        $response = $this->doRequestWithRetry('GET', $path, function() use ($url) {
+        $response = $this->doRequestWithRetry('GET', $path, function() use ($url, $cabeceras) {
             return wp_remote_get($url, [
                 'timeout' => 15,
-                'headers' => $this->headers(),
+                'headers' => $cabeceras + $this->headers(),
             ]);
         });
 

@@ -39,7 +39,12 @@ function pvp_http(string $metodo, string $url, array $args): array
         return ['code' => 200, 'body' => ['results' => $res, 'summary' => ['total' => count($res), 'ok' => count($res), 'failed' => 0]]];
     }
     if (preg_match('#/products/(\d+)$#', $ruta, $m)) { return ['code' => 200, 'body' => ['data' => ['product_id' => (int) $m[1]]]]; }
-    if (str_ends_with($ruta, '/products')) { return ['code' => $metodo === 'GET' ? 200 : 201, 'body' => ['data' => $metodo === 'GET' ? [] : ['product_id' => 501]]]; }
+    if (str_ends_with($ruta, '/products') && $metodo === 'GET') {
+        // Catálogo del TPV (fase 2: los precios con IVA para comparar con la web).
+        if (!empty($GLOBALS['__http']['catalogoFalla'])) { return ['code' => 503, 'body' => ['error' => 'caido']]; }
+        return ['code' => 200, 'body' => ['data' => $GLOBALS['__http']['catalogo'] ?? [], 'meta' => ['cursor' => null]]];
+    }
+    if (str_ends_with($ruta, '/products')) { return ['code' => 201, 'body' => ['data' => ['product_id' => 501]]]; }
     return ['code' => 200, 'body' => ['results' => []]];
 }
 if (!function_exists('wp_remote_post'))    { function wp_remote_post($u, $a = [])    { return pvp_http('POST', $u, $a); } }
