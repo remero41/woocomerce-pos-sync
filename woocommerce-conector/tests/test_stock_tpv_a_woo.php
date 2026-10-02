@@ -21,8 +21,17 @@ require_once __DIR__ . '/test_volcado_bulk.php';
 
 if (!function_exists('wp_strip_all_tags'))  { function wp_strip_all_tags($s) { return strip_tags((string) $s); } }
 if (!function_exists('wp_kses_post'))       { function wp_kses_post($s) { return (string) $s; } }
-if (!function_exists('wp_update_post'))     { function wp_update_post($d) { return (int) ($d['ID'] ?? 0); } }
-if (!function_exists('wp_insert_post'))     { function wp_insert_post($d) { return 9000 + count($GLOBALS['__wp_meta']); } }
+if (!function_exists('wp_update_post')) {
+    // Aplica el estado al post en memoria: la venta a peso pasa a borrador y vuelve a publicar.
+    function wp_update_post($d) {
+        $id = (int) ($d['ID'] ?? 0);
+        if (isset($d['post_status'], $GLOBALS['__wp_posts'][$id])) { $GLOBALS['__wp_posts'][$id]->post_status = $d['post_status']; }
+        return $id;
+    }
+}
+if (!function_exists('wp_insert_post')) {
+    function wp_insert_post($d) { $GLOBALS['__wp_inserts'][] = $d; return 9000 + count($GLOBALS['__wp_meta']); }
+}
 if (!function_exists('is_wp_error'))        { function is_wp_error($x) { return false; } }
 if (!function_exists('wc_format_decimal'))  { function wc_format_decimal($n) { return (string) $n; } }
 if (!function_exists('wp_set_object_terms')) { function wp_set_object_terms($id, $t, $tax) { return true; } }

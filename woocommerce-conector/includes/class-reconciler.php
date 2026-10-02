@@ -107,6 +107,13 @@ class TPV_Sync_Reconciler
     {
         $politica += self::politicaPorDefecto();
 
+        // Venta a peso: el TPV lo vende por kg con stock decimal. Ni se crea ni se
+        // corrige en Woo, ni su stock entero viaja al TPV (la API respondería 409).
+        if (!empty($tpv['sold_by_weight'])) {
+            $nada = ['accion' => 'nada', 'campos' => [], 'motivo' => 'se vende a peso en el TPV'];
+            return ['discrepa' => false, 'catalogo' => $nada, 'stock' => $nada];
+        }
+
         // Solo en un lado: se puede crear en el otro, nunca borrar. Borrar por
         // ausencia es como se pierden catalogos enteros cuando el que "falta"
         // en realidad estaba despublicado o fuera del filtro de la consulta.
