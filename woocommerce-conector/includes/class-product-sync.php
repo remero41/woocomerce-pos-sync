@@ -14,6 +14,11 @@ class TPV_Sync_Product_Sync
 
     // Meta key para mapear product_id del TPV con el post_id de WC
     const TPV_ID_META           = '_tpv_product_id';
+    /**
+     * Marca de «el TPV vende este producto a peso» (API: `sold_by_weight`). Precio por
+     * kg/lb/100 g y stock decimal: Woo no lo publica ni intercambia su stock con el TPV.
+     */
+    const A_PESO_META           = '_tpv_a_peso';
     const TPV_CUSTOMER_META     = '_tpv_customer_id';
     const TPV_CATEGORY_TERM_META = 'tpv_category_id'; // termmeta
 
@@ -345,6 +350,23 @@ class TPV_Sync_Product_Sync
             }
         }
 
+        // Venta a peso: el TPV lo vende por kg con stock decimal (4,25 kg) y Woo guarda
+        // unidades enteras con precio «por unidad». No se publica: si ya estaba, pasa a
+        // BORRADOR (no se borra ni se desenlaza); si no estaba, no se crea. Cuando el TPV
+        // lo desmarque, este mismo upsert le devuelve el estado del TPV (vuelve a publicarse).
+        if (!empty($p['sold_by_weight'])) {
+            if ($postId) {
+                update_post_meta($postId, self::TPV_ID_META, $tpvId);
+                update_post_meta($postId, self::A_PESO_META, '1');
+                wp_update_post(['ID' => $postId, 'post_status' => 'draft']);
+                $this->log('ok', $tpvId, 'Pasado a borrador: en el TPV se vende a peso');
+            }
+            return 'a_peso';
+        }
+        if ($postId) {
+            delete_post_meta($postId, self::A_PESO_META);
+        }
+
         // La API devuelve precios ya con impuesto incluido (X-Price-Format: gross)
         $regularPrice = (float)$p['price'];
 
@@ -488,6 +510,12 @@ class TPV_Sync_Product_Sync
         foreach ($order->get_items() as $item) {
             $tpvId = get_post_meta($item->get_product_id(), TPV_Sync_Product_Sync::TPV_ID_META, true);
             if (!$tpvId) continue;
+            // Un producto a peso vendido en Woo (pedido de antes de despublicarlo): su
+            // stock es en kg y la API rechaza el entero de Woo. Lo ajusta la tienda.
+            if (self::esAPeso((int) $item->get_product_id())) {
+                $this->log('error', (int) $tpvId, "Venta WC #{$wcOrderId}: producto a peso, descuenta el stock a mano en el TPV");
+                continue;
+            }
 
             $qty = (int)$item->get_quantity();
             if ($qty <= 0) continue;
@@ -539,6 +567,8 @@ class TPV_Sync_Product_Sync
         } else {
             $tpvId = (int)get_post_meta($product->get_id(), self::TPV_ID_META, true);
             if (!$tpvId) return;
+            // A peso: el stock entero de Woo pisaría el decimal del TPV (4,25 kg → 4).
+            if (self::esAPeso($product->get_id())) return;
 
             // El endpoint adjustStock usa delta — calculamos a partir del stock
             // actual del TPV para que ambos lados queden exactos.
@@ -590,6 +620,8 @@ class TPV_Sync_Product_Sync
     {
         $postId = $this->find_wc_post($tpvId);
         if (!$postId) return;
+        // A peso: su stock es en kg con decimales; Woo no lo lleva.
+        if (self::esAPeso($postId)) return;
 
         // Evitar eco al TPV: este cambio lo originó el propio TPV.
         $GLOBALS['tpv_sync_skip_wc_stock_push'] = true;
@@ -736,6 +768,8 @@ class TPV_Sync_Product_Sync
             try {
                 $data = $details[$tpvId] ?? null;
                 if (!$data) { $stats['errors']++; continue; }
+
+                if (!empty($data['sold_by_weight'])) { $stats['skipped']++; continue; }
 
                 $tpvQty = (float)($data['quantity'] ?? 0);
                 $isVar  = !empty($data['options']);
@@ -2855,6 +2889,12 @@ class TPV_Sync_Product_Sync
 
     // ─── Log ──────────────────────────────────────────────────────────────────
 
+    /** ¿El TPV vende a peso este producto de Woo? (lo marca upsert al leer la API). */
+    public static function esAPeso(int $postId): bool
+    {
+        return get_post_meta($postId, self::A_PESO_META, true) === '1';
+    }
+
     private function log(string $status, int $resourceId, string $msg): void
     {
         global $wpdb;
@@ -3072,6 +3112,8 @@ class TPV_Sync_Product_Sync
                 'price'       => (float) ($p['price'] ?? 0),
                 'sku'         => (string) ($p['sku'] ?? ''),
                 'quantity'    => (float) ($p['quantity'] ?? 0),
+                // decidir() no reconcilia lo que el TPV vende a peso (stock en kg).
+                'sold_by_weight' => !empty($p['sold_by_weight']),
             ];
 
             // Si uno de los dos lados no cuenta stock, no hay stock que
