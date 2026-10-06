@@ -306,16 +306,14 @@ class TPV_Sync_Webhook
         );
         $now = time();
         if ($ts <= 0 || abs($now - $ts) > 300) {
-            // Periodo de gracia: si el TPV todavía no envía timestamp (compat),
-            // permitimos pasar pero solo si el endpoint está marcado en debug
-            // y registramos la falta. Producción debe rechazar.
-            if (!defined('WP_DEBUG') || !WP_DEBUG) {
-                status_header(401);
-                nocache_headers();
-                header('Content-Type: application/json');
-                echo json_encode(['error' => 'Stale or missing timestamp']);
-                return;
-            }
+            // Sin marca de tiempo (o vieja) no hay anti-replay: se rechaza
+            // siempre. Antes WP_DEBUG=true (habitual en tiendas en producción)
+            // dejaba pasar cualquier entrega sin marca de tiempo.
+            status_header(401);
+            nocache_headers();
+            header('Content-Type: application/json');
+            echo json_encode(['error' => 'Stale or missing timestamp']);
+            return;
         }
         if (!self::verify_signature($raw, $signature, $secret, $ts)) {
             status_header(401);
@@ -543,9 +541,15 @@ class TPV_Sync_Webhook
                     break;
 
                 case 'csv.imported':
-                    // CSV importado en TPV — programar re-sincronización parcial
-                    wp_schedule_single_event(time() + 60, 'tpv_sync_import_all');
-                    $this->log($eventType, 0, 'CSV importado en TPV — re-sync programada en 60s');
+                    // Un CSV en el TPV cambia stock (y catálogo) de muchos productos
+                    // de golpe. Antes se programaba import_all(): volcaba el catálogo
+                    // ENTERO del TPV sobre Woo (nombres, descripciones, estados,
+                    // precios, variaciones) sin mirar quién manda. Ahora se repasa
+                    // el STOCK de todo el catálogo con la política de siempre
+                    // (reconcile: manda el TPV salvo que se diga lo contrario); el
+                    // catálogo viaja por sus avisos producto a producto.
+                    wp_schedule_single_event(time() + 60, 'tpv_sync_reconcile_stock_total', ['']);
+                    $this->log($eventType, 0, 'CSV importado en TPV — repaso de stock programado en 60s');
                     break;
 
                 // ── Clientes ────────────────────────────────────────────────
@@ -720,14 +724,17 @@ class TPV_Sync_Webhook
             return $timestamp === 0 || $timestamp === $ts;
         }
 
-        // Formatos legacy, para no romper TPVs sin actualizar mientras se
-        // despliega la flota.
+        // Formato anterior con la marca de tiempo DENTRO de la firma, para no
+        // romper TPVs sin actualizar mientras se despliega la flota.
         if ($timestamp > 0) {
             $expectedTs = 'sha256=' . hash_hmac('sha256', $timestamp . "\n" . $payload, $secret);
             if (hash_equals($expectedTs, $signature)) return true;
         }
-        $expectedLegacy = 'sha256=' . hash_hmac('sha256', $payload, $secret);
-        return hash_equals($expectedLegacy, $signature);
+        // La firma del cuerpo a secas (sin marca de tiempo) ya no vale: una
+        // entrega capturada se podía reenviar para siempre poniéndole una
+        // cabecera X-Webhook-Timestamp fresca, que no está firmada. El TPV
+        // emite el formato t=/v1= desde el 23-09-2026.
+        return false;
     }
 
     private function log(string $eventType, int $resourceId, string $msg, string $status = 'ok'): void
@@ -743,9 +750,5 @@ class TPV_Sync_Webhook
     }
 }
 
-// Cron hook para re-sincronización tras CSV import
-add_action('tpv_sync_import_all', function () {
-    if (class_exists('TPV_Sync')) {
-        TPV_Sync::instance()->products->import_all();
-    }
-});
+// El repaso tras un CSV del TPV se engancha en woocommerce-conector.php
+// (tpv_sync_reconcile_stock_total): aquí había una segunda copia del volcado.

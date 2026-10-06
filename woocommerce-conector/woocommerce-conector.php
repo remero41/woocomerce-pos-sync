@@ -16,6 +16,17 @@ define('TPV_SYNC_VERSION', '2.10.0');
 define('TPV_SYNC_DIR',     plugin_dir_path(__FILE__));
 define('TPV_SYNC_URL',     plugin_dir_url(__FILE__));
 
+// ─── Compatibilidad con el almacén de pedidos HPOS ───────────────────────────
+// El plugin lee los pedidos por su CRUD (wc_get_order, get_meta) y guarda sus
+// marcas con el id del pedido, que existe también como post de relleno con
+// HPOS. Sin esta declaración WooCommerce lo marca «incompatible» en cada
+// tienda nueva (HPOS es el almacén de serie desde la 8.2).
+add_action('before_woocommerce_init', static function (): void {
+    if (class_exists(\Automattic\WooCommerce\Utilities\FeaturesUtil::class)) {
+        \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility('custom_order_tables', __FILE__, true);
+    }
+});
+
 // ─── Autoload ─────────────────────────────────────────────────────────────────
 
 require_once TPV_SYNC_DIR . 'includes/class-secrets.php';
@@ -407,10 +418,21 @@ add_action('plugins_loaded', function () {
     }
 });
 
-// ─── Cron: re-sync tras CSV import en TPV ────────────────────────────────────
+// ─── Cron: repaso de stock tras un CSV en el TPV ─────────────────────────────
+// Catálogo entero, con la política de stock del comerciante, por páginas de
+// 100: cada pasada programa la siguiente con su cursor. Una sola pasada sobre
+// miles de productos no cabe en el tiempo de un WP-Cron (el hosting la corta
+// y no queda rastro). El volcado completo (import_all) solo lo lanza el
+// asistente, a mano.
 
-add_action('tpv_sync_import_all', function () {
-    if (class_exists('TPV_Sync') && tpv_sync_module_catalog()) {
-        TPV_Sync::instance()->products->import_all();
+function tpv_sync_repaso_stock_pagina($cursor = ''): void
+{
+    if (!class_exists('TPV_Sync') || !tpv_sync_module_catalog()) return;
+    $stats = TPV_Sync::instance()->products->reconcile(100, $cursor !== '' ? (string) $cursor : null);
+    if (!empty($stats['next_cursor'])) {
+        wp_schedule_single_event(time() + 10, 'tpv_sync_reconcile_stock_total', [(string) $stats['next_cursor']]);
     }
-});
+}
+add_action('tpv_sync_reconcile_stock_total', 'tpv_sync_repaso_stock_pagina', 10, 1);
+// Compat: un evento ya programado por una versión anterior no debe volcar el catálogo.
+add_action('tpv_sync_import_all', static function () { tpv_sync_repaso_stock_pagina(''); });

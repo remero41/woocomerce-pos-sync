@@ -59,3 +59,19 @@ function run_cron_cableado_tests(WooTestRunner $t): void
         $t->assertEquals([], array_values($quedan), 'seguiría disparándose con el plugin desactivado');
     });
 }
+
+function run_repaso_stock_csv_tests(WooTestRunner $t): void
+{
+    $t->suite('Tras un CSV en el TPV: repaso de stock por páginas, no volcado');
+    $src = (string) file_get_contents(dirname(__DIR__) . '/woocommerce-conector.php');
+    $wh  = (string) file_get_contents(dirname(__DIR__) . '/includes/class-webhook-handler.php');
+    $t->test('csv.imported programa el repaso de stock, no import_all()', function ($t) use ($wh) {
+        $t->assert(str_contains($wh, "'tpv_sync_reconcile_stock_total', ['']"), 'programa el repaso desde el principio');
+        $t->assert(!preg_match("/case 'csv\\.imported':[^}]*'tpv_sync_import_all'/s", $wh), 'el aviso no programa el volcado');
+    });
+    $t->test('cada página programa la siguiente con su cursor y nunca va sin límite', function ($t) use ($src) {
+        $t->assert(str_contains($src, 'reconcile(100, $cursor'), 'páginas de 100');
+        $t->assert(!str_contains($src, 'reconcile(0)'), 'sin pasada entera');
+        $t->assert(str_contains($src, "wp_schedule_single_event(time() + 10, 'tpv_sync_reconcile_stock_total', [(string) \$stats['next_cursor']])"), 'encadena con el cursor');
+    });
+}

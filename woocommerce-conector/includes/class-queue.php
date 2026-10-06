@@ -207,6 +207,23 @@ class TPV_Sync_Queue
         ));
     }
 
+    /**
+     * Cuánto hay que mover el stock del TPV para dejarlo en el absoluto que
+     * tenía Woo. Función pura: null si la respuesta del TPV no trae el stock
+     * (no se puede calcular; hay que reintentar, nunca asumir 0).
+     */
+    public static function deltaHaciaAbsoluto(array $respuestaStock, float $objetivo): ?float
+    {
+        if (!TPV_Sync_API_Client::fueBien($respuestaStock)) {
+            return null;
+        }
+        $actual = $respuestaStock['total']['quantity'] ?? $respuestaStock['data']['quantity'] ?? null;
+        if ($actual === null || !is_numeric($actual)) {
+            return null;
+        }
+        return $objetivo - (float) $actual;
+    }
+
     // ─── Ejecutores concretos por tipo de operación ──────────────────────────
 
     private function execute(string $operation, array $payload): bool
@@ -218,6 +235,21 @@ class TPV_Sync_Queue
                 $delta = (float)($payload['delta']         ?? 0);
                 $reason = (string)($payload['reason']      ?? 'ajuste_manual');
                 if (!$tpvId) return true; // payload corrupto → no reintentar
+                // Un cambio de stock hecho en Woo mientras el TPV no contestaba
+                // se encola con el ABSOLUTO que tenía Woo (absolute_target) y
+                // delta=0 «a recalcular». Hasta ahora nadie lo recalculaba: se
+                // mandaba quantity_change=0, la API no cambiaba nada y la fila
+                // se daba por hecha. El stock de Woo se perdía sin señal.
+                if (array_key_exists('absolute_target', $payload)) {
+                    $delta = self::deltaHaciaAbsoluto($this->api->get("/products/$tpvId/stock"),
+                                                      (float) $payload['absolute_target']);
+                    if ($delta === null) {
+                        return false;   // el TPV sigue sin contestar: reintentar
+                    }
+                    if (abs($delta) < 0.0001) {
+                        return true;    // ya está donde Woo lo dejó
+                    }
+                }
                 $r = $this->api->patch("/products/$tpvId/stock", [
                     'quantity_change' => $delta,
                     'reason'          => $reason,
@@ -243,6 +275,11 @@ class TPV_Sync_Queue
                 if (get_post_meta($wcOrderId, TPV_Sync_Order_Sync::TPV_ORDER_META, true)) return true; // ya enviado
                 $this->orders->send_to_tpv($wcOrderId);
                 return (bool)get_post_meta($wcOrderId, TPV_Sync_Order_Sync::TPV_ORDER_META, true);
+
+            case 'order.cancel':
+                $wcOrderId = (int)($payload['wc_order_id'] ?? 0);
+                if (!$wcOrderId) return true;
+                return $this->orders->devolverTodo($wcOrderId, (string) ($payload['motivo'] ?? 'Pedido cancelado en WooCommerce'));
 
             case 'refund.send':
                 $wcOrderId = (int)($payload['wc_order_id'] ?? 0);

@@ -68,13 +68,13 @@ function run_sin_gestion_pedidos_tpv_tests(WooTestRunner $t): void
         $t->assert(!method_exists('TPV_Sync_Order_Sync', 'update_wc_status'), 'código muerto fuera');
     });
 
-    $t->test('Woo → TPV sigue: cambiar el estado en Woo se propaga al TPV', function ($t) {
+    $t->test('Woo → TPV sigue: cancelar en Woo deshace la venta en el TPV (devolución, no estado 7)', function ($t) {
         pedidos_tienda();
         $GLOBALS['__wp_meta'][1] = ['_tpv_order_id' => 700];
-        $api = new ApiPedidosFalsa();
-        pedidos_sync($api)->on_wc_status_changed(1, 'processing', 'cancelled');
-        $t->assertEquals(7, (int) ($api->patches['/orders/700/status']['order_status_id'] ?? 0),
-            'la cancelación en la tienda tiene que llegar al TPV (stock y caja)');
+        $api = new ApiCancelacionFalsa([linea_tpv(10, 100, 0, 2) + ['name' => 'A']]);
+        pedidos_sync_con($api)->on_wc_status_changed(1, 'processing', 'cancelled');
+        $t->assertEquals(['wc-cancel-1-10'], array_keys($api->devueltas),
+            'la cancelación en la tienda tiene que llegar al TPV como devolución (stock y caja)');
     });
 
     $t->test('el panel ya no tiene el interruptor «Pedidos» y dice lo que pasa de verdad', function ($t) {

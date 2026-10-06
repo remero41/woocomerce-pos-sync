@@ -301,6 +301,25 @@ class TPV_Sync_Product_Sync
         return $deleted;
     }
 
+    /**
+     * Estado del post de Woo tras un aviso del TPV. Función pura.
+     *
+     * El TPV solo sabe «visible» (1) o «no» (0); Woo tiene más estados y los
+     * elige el comerciante. Antes cualquier aviso del TPV (hasta uno de solo
+     * stock) dejaba en borrador un producto privado, pendiente de revisión o
+     * programado (reproducido el 07-10-2026).
+     */
+    public static function estadoPost(string $actual, int $statusTpv): string
+    {
+        if ($actual === '' || $actual === 'auto-draft') {
+            return $statusTpv === 1 ? 'publish' : 'draft';
+        }
+        if ($statusTpv === 1) {
+            return $actual === 'draft' ? 'publish' : $actual;
+        }
+        return $actual === 'publish' ? 'draft' : $actual;
+    }
+
     // ─── Upsert único ─────────────────────────────────────────────────────────
 
     /**
@@ -384,7 +403,7 @@ class TPV_Sync_Product_Sync
 
         $data = [
             'post_title'   => wp_strip_all_tags($p['name'] ?? ''),
-            'post_status'  => (int)($p['status'] ?? 0) === 1 ? 'publish' : 'draft',
+            'post_status'  => self::estadoPost($postId ? (string) get_post_status($postId) : '', (int) ($p['status'] ?? 0)),
             'post_type'    => 'product',
             'post_content' => wp_kses_post($p['description'] ?? ''),
         ];
@@ -1315,7 +1334,9 @@ class TPV_Sync_Product_Sync
             $cursor = null;
             $pageGuard = 0;
             do {
-                $params = ['per_page' => 200, 'fields' => 'product_id,model,sku'];
+                // per_page 100: la API recorta a ese máximo (pedir 200 hacía
+                // creer que el tope de páginas cubría el doble).
+                $params = ['per_page' => 100, 'fields' => 'product_id,model,sku'];
                 if ($cursor !== null) { $params['cursor'] = $cursor; }
                 $r = $this->api->get('/products', $params);
                 foreach (($r['data'] ?? []) as $row) {
@@ -1338,7 +1359,10 @@ class TPV_Sync_Product_Sync
                 }
                 $cursor = $r['meta']['cursor'] ?? null;
                 $pageGuard++;
-            } while ($cursor !== null && $pageGuard < 100);
+            // Tope de seguridad contra un cursor que no avance: 2.000 páginas =
+            // 200.000 productos. Con 100 páginas un catálogo de más de 10.000
+            // productos quedaba a medias y el resto se daba de alta duplicado.
+            } while ($cursor !== null && $pageGuard < 2000);
         } catch (Throwable $e) {
             $this->log('error', 0, 'precarga TPV catalog: ' . $e->getMessage());
         }
@@ -1702,6 +1726,12 @@ class TPV_Sync_Product_Sync
         );
         $tpvId = self::resolverEnlace($postId, $ids['model'], $ids['sku'], $this->getTpvCatalogIndex(),
             fn (int $tid): int => $this->find_wc_post($tid));
+        if ($tpvId <= 0) {
+            // Antes de dar de alta, se pregunta al TPV por el código exacto: el
+            // índice es una foto (un alta de hace un momento no está) y un alta
+            // de más deja dos productos con el mismo código en la caja.
+            $tpvId = $this->buscarGemeloExacto($postId, $ids['model'], $ids['sku']);
+        }
         if ($tpvId > 0) {
             update_post_meta($postId, self::TPV_ID_META, $tpvId);
             $this->log('ok', $tpvId, "Enlazado al asegurar post=$postId ↔ TPV id=$tpvId");
@@ -1709,6 +1739,32 @@ class TPV_Sync_Product_Sync
         }
         $this->push_wc_product_to_tpv($postId, true);
         return (int) get_post_meta($postId, self::TPV_ID_META, true);
+    }
+
+    /**
+     * Gemelo en el TPV por igualdad EXACTA de model o sku (la búsqueda de la
+     * API es un LIKE: «ABC» encuentra «ABC-2»). Libre, o ya de este post.
+     */
+    private function buscarGemeloExacto(int $postId, string $model, string $sku): int
+    {
+        foreach (array_unique(array_filter([$model, $sku], 'strlen')) as $codigo) {
+            $r = $this->api->get('/products', ['search' => $codigo, 'per_page' => 100, 'fields' => 'product_id,model,sku']);
+            if (!TPV_Sync_API_Client::fueBien($r)) {
+                continue;
+            }
+            foreach ((array) ($r['data'] ?? []) as $fila) {
+                $tid = (int) ($fila['product_id'] ?? 0);
+                $igual = ($model !== '' && (string) ($fila['model'] ?? '') === $model)
+                      || ($sku !== '' && (string) ($fila['sku'] ?? '') === $sku);
+                if ($tid > 0 && $igual) {
+                    $dueno = $this->find_wc_post($tid);
+                    if ($dueno === 0 || $dueno === $postId) {
+                        return $tid;
+                    }
+                }
+            }
+        }
+        return 0;
     }
 
     /**
@@ -2723,99 +2779,217 @@ class TPV_Sync_Product_Sync
      * en un atributo de variación. Cada valor es una variación con su propio
      * stock y precio.
      */
-    private function sync_variations(int $postId, array $options, int $tpvId, float $basePrice = 0): void
+    /**
+     * Slug estable para comparar nombres de opciones/valores entre el TPV y
+     * Woo sin depender de WordPress (sanitize_title hace lo mismo para lo
+     * que aquí importa: minúsculas, acentos fuera, no alfanuméricos → «-»).
+     */
+    public static function slugAtributo(string $nombre): string
     {
-        // ── 1. Registrar taxonomías globales y construir atributos WC ─────────
-        $wcAttributes = [];
-        foreach ($options as $position => $opt) {
-            $name = sanitize_text_field($opt['option_name'] ?? '');
-            if (!$name) continue;
+        $s = function_exists('remove_accents') ? remove_accents($nombre) : $nombre;
+        $s = strtolower(trim($s));
+        $s = preg_replace('/[^a-z0-9]+/', '-', $s) ?? '';
+        return trim($s, '-');
+    }
 
-            $values = array_filter(array_map(
-                fn($v) => sanitize_text_field($v['value_name'] ?? ''),
-                $opt['values'] ?? []
-            ));
-            if (empty($values)) continue;
+    /**
+     * Qué hacer con las variaciones de Woo a partir de las opciones del TPV.
+     * Función pura, para poder fijarla sin WordPress.
+     *
+     * Antes se rehacía la estructura entera en cada aviso del TPV: se
+     * sustituían los atributos del producto por los del TPV, se CREABAN
+     * variaciones nuevas para cada valor (duplicando las que ya había) y se
+     * BORRABAN las que llevaban un enlace que el TPV ya no tenía (tras
+     * reconectar a otro TPV: todas). Reproducido el 07-10-2026: un producto
+     * Talla×Color quedaba con 8 variaciones y un atributo «Talla-Color»; uno
+     * de una talla perdía sus 5 variaciones (sku, imagen, rebaja) y recibía 5
+     * nuevas.
+     *
+     * Reglas:
+     *  - Una variación se empareja con un valor del TPV por su enlace
+     *    (_tpv_option_value_id), si no por su código (code_bar ↔ sku/GTIN) y,
+     *    si la estructura es la misma (una sola opción), por el nombre del
+     *    valor. Un valor emparejado solo recibe stock y precio.
+     *  - Solo se crea estructura (atributos, variaciones nuevas) si Woo no
+     *    tiene variaciones aún o sus atributos de variación son exactamente
+     *    las opciones del TPV. Si no (Talla×Color, atributos propios...), la
+     *    estructura de Woo se respeta y se registra el motivo.
+     *  - Nunca se borra una variación: la que tenía un valor que el TPV ya no
+     *    tiene pasa a privada y agotada (los pedidos antiguos la referencian).
+     *
+     * @param array $options    opciones del TPV (GET /products/{id})
+     * @param array $existentes varId => [pov=>int, sku=>string, gtin=>string, attrs=>[tax=>slug]]
+     * @param array $attrsWoo   taxonomías/nombres de los atributos de variación del producto
+     * @return array{compatible:bool, motivo:string, emparejadas:array<int,int>, crear:array<int,bool>, sobrantes:int[]}
+     */
+    public static function planVariaciones(array $options, array $existentes, array $attrsWoo): array
+    {
+        $taxTpv = [];
+        foreach ($options as $opt) {
+            $n = trim((string) ($opt['option_name'] ?? ''));
+            if ($n !== '' && !empty($opt['values'])) $taxTpv[] = 'pa_' . self::slugAtributo($n);
+        }
+        $attrsWooN = array_values(array_unique(array_map(fn ($a) => (string) $a, $attrsWoo)));
+        sort($taxTpv); sort($attrsWooN);
+        $compatible = $attrsWooN === [] || $attrsWooN === $taxTpv;
+        $motivo = $compatible ? '' : 'Woo tiene atributos de variación (' . implode(', ', $attrsWooN)
+            . ') que no son las opciones del TPV (' . implode(', ', $taxTpv) . '): se respeta la estructura de Woo';
 
-            $taxonomy = 'pa_' . sanitize_title($name);
-
-            // Registrar la taxonomy si no existe
-            if (!taxonomy_exists($taxonomy)) {
-                register_taxonomy($taxonomy, 'product', ['label' => $name]);
+        $porPov = []; $porCodigo = []; $porValor = [];
+        foreach ($existentes as $varId => $e) {
+            $varId = (int) $varId;
+            if ((int) ($e['pov'] ?? 0) > 0) $porPov[(int) $e['pov']] = $varId;
+            foreach (['sku', 'gtin'] as $k) {
+                $c = strtolower(trim((string) ($e[$k] ?? '')));
+                if ($c !== '' && !isset($porCodigo[$c])) $porCodigo[$c] = $varId;
             }
+            $attrs = (array) ($e['attrs'] ?? []);
+            if (count($attrs) === 1 && count($taxTpv) === 1) {
+                $v = self::slugAtributo((string) reset($attrs));
+                if ($v !== '' && !isset($porValor[$v])) $porValor[$v] = $varId;
+            }
+        }
 
-            // Asegurarse de que existe en woocommerce_attribute_taxonomies
-            $this->ensure_wc_attribute($name, $taxonomy);
-
-            // Crear/obtener los terms y asignarlos al producto
-            $termIds = [];
-            foreach ($values as $val) {
-                $term = get_term_by('name', $val, $taxonomy);
-                if (!$term) {
-                    $result = wp_insert_term($val, $taxonomy);
-                    if (!is_wp_error($result)) {
-                        $termIds[] = (int)$result['term_id'];
-                    }
-                } else {
-                    $termIds[] = (int)$term->term_id;
+        $emparejadas = []; $crear = []; $usadas = []; $valoresTpv = [];
+        foreach ($options as $opt) {
+            foreach ((array) ($opt['values'] ?? []) as $val) {
+                $povId = (int) ($val['product_option_value_id'] ?? 0);
+                if ($povId <= 0) continue;
+                $valoresTpv[$povId] = true;
+                $cands = [$porPov[$povId] ?? 0];
+                $code = strtolower(trim((string) ($val['code_bar'] ?? '')));
+                if ($code !== '') $cands[] = $porCodigo[$code] ?? 0;
+                if ($compatible) $cands[] = $porValor[self::slugAtributo((string) ($val['value_name'] ?? ''))] ?? 0;
+                $varId = 0;
+                foreach ($cands as $c) { if ($c > 0 && !isset($usadas[$c])) { $varId = $c; break; } }
+                if ($varId > 0) {
+                    $emparejadas[$povId] = $varId; $usadas[$varId] = true;
+                } elseif ($compatible) {
+                    $crear[$povId] = true;
                 }
             }
-            wp_set_object_terms($postId, $termIds, $taxonomy);
+        }
+        $sobrantes = [];
+        foreach ($existentes as $varId => $e) {
+            $pov = (int) ($e['pov'] ?? 0);
+            if ($pov > 0 && !isset($valoresTpv[$pov]) && !isset($usadas[(int) $varId])) $sobrantes[] = (int) $varId;
+        }
+        return ['compatible' => $compatible, 'motivo' => $motivo, 'emparejadas' => $emparejadas,
+                'crear' => $crear, 'sobrantes' => $sobrantes];
+    }
 
-            $wcAttributes[$taxonomy] = [
-                'name'         => $taxonomy,
-                'value'        => '',        // vacío cuando is_taxonomy=1 (los valores van en wp_term_relationships)
-                'position'     => $position,
-                'is_visible'   => 1,
-                'is_variation' => 1,
-                'is_taxonomy'  => 1,
+    /** Foto de las variaciones que Woo ya tiene, para planVariaciones(). */
+    private function fotoVariaciones(int $postId): array
+    {
+        global $wpdb;
+        $foto = [];
+        $ids = (array) $wpdb->get_col($wpdb->prepare(
+            "SELECT ID FROM {$wpdb->posts} WHERE post_parent = %d AND post_type = 'product_variation'", $postId));
+        foreach ($ids as $vid) {
+            $vid = (int) $vid;
+            $attrs = [];
+            foreach ((array) get_post_meta($vid) as $k => $v) {
+                if (str_starts_with((string) $k, 'attribute_')) $attrs[substr((string) $k, 10)] = (string) (is_array($v) ? reset($v) : $v);
+            }
+            $foto[$vid] = [
+                'pov'   => (int) get_post_meta($vid, '_tpv_option_value_id', true),
+                'sku'   => (string) get_post_meta($vid, '_sku', true),
+                'gtin'  => (string) get_post_meta($vid, '_global_unique_id', true),
+                'attrs' => $attrs,
             ];
         }
+        return $foto;
+    }
 
-        if (empty($wcAttributes)) return;
-        update_post_meta($postId, '_product_attributes', $wcAttributes);
+    /** Atributos de variación que el producto ya tiene en Woo (taxonomías o nombres propios). */
+    private function atributosDeVariacion(int $postId): array
+    {
+        $out = [];
+        foreach ((array) get_post_meta($postId, '_product_attributes', true) as $k => $a) {
+            if (!empty($a['is_variation'])) $out[] = (string) $k;
+        }
+        return $out;
+    }
 
-        // ── 2. Crear/actualizar variaciones ───────────────────────────────────
-        // Mapa: tpv_option_value_id → variation post_id existente
-        global $wpdb;
-        $existingMap = [];
-        $existingVars = $wpdb->get_results($wpdb->prepare(
-            "SELECT p.ID, pm.meta_value as tpv_vid
-             FROM {$wpdb->posts} p
-             JOIN {$wpdb->postmeta} pm ON pm.post_id = p.ID AND pm.meta_key = '_tpv_option_value_id'
-             WHERE p.post_parent = %d AND p.post_type = 'product_variation'",
-            $postId
-        ));
-        foreach ($existingVars as $v) {
-            $existingMap[(int)$v->tpv_vid] = (int)$v->ID;
+    private function sync_variations(int $postId, array $options, int $tpvId, float $basePrice = 0): void
+    {
+        $existentes = $this->fotoVariaciones($postId);
+        $plan = self::planVariaciones($options, $existentes, $this->atributosDeVariacion($postId));
+        if (!$plan['compatible']) {
+            $this->log('skip', $tpvId, "Variaciones del post $postId: " . $plan['motivo']);
         }
 
-        $processedVarIds = [];
+        // ── 1. Estructura (solo si es la del TPV o no hay ninguna) ──────────
+        $termSlugs = [];   // tax => [valor => slug]
+        if ($plan['compatible']) {
+            $wcAttributes = [];
+            foreach ($options as $position => $opt) {
+                $name = sanitize_text_field($opt['option_name'] ?? '');
+                if (!$name) continue;
+                $values = array_filter(array_map(
+                    fn($v) => sanitize_text_field($v['value_name'] ?? ''),
+                    $opt['values'] ?? []
+                ));
+                if (empty($values)) continue;
 
+                $taxonomy = 'pa_' . sanitize_title($name);
+                if (!taxonomy_exists($taxonomy)) {
+                    register_taxonomy($taxonomy, 'product', ['label' => $name]);
+                }
+                $this->ensure_wc_attribute($name, $taxonomy);
+
+                $termIds = [];
+                foreach ($values as $val) {
+                    $term = get_term_by('name', $val, $taxonomy);
+                    if (!$term) {
+                        $result = wp_insert_term($val, $taxonomy);
+                        if (!is_wp_error($result)) {
+                            $termIds[] = (int)$result['term_id'];
+                            $term = get_term_by('id', (int) $result['term_id'], $taxonomy);
+                        }
+                    } else {
+                        $termIds[] = (int)$term->term_id;
+                    }
+                    $termSlugs[$taxonomy][$val] = $term ? $term->slug : sanitize_title($val);
+                }
+                wp_set_object_terms($postId, $termIds, $taxonomy);
+
+                $wcAttributes[$taxonomy] = [
+                    'name'         => $taxonomy,
+                    'value'        => '',
+                    'position'     => $position,
+                    'is_visible'   => 1,
+                    'is_variation' => 1,
+                    'is_taxonomy'  => 1,
+                ];
+            }
+            if (empty($wcAttributes)) return;
+            update_post_meta($postId, '_product_attributes', $wcAttributes);
+        }
+
+        // ── 2. Variaciones: emparejadas → stock/precio; nuevas → crear ───────
         foreach ($options as $opt) {
             $attrKey = 'pa_' . sanitize_title($opt['option_name'] ?? '');
-
             foreach ($opt['values'] ?? [] as $val) {
                 $valueName = sanitize_text_field($val['value_name'] ?? '');
-                if (!$valueName) continue;
+                $tpvValId  = (int)($val['product_option_value_id'] ?? 0);
+                if (!$valueName || $tpvValId <= 0) continue;
 
-                $tpvValId    = (int)($val['product_option_value_id'] ?? 0);
                 $quantity    = (int)($val['quantity'] ?? 0);
                 $optionPrice = (float)($val['price'] ?? 0);
                 $prefix      = $val['price_prefix'] ?? '+';
-
-                // Precio real de la variación = base ± ajuste de la opción
                 $varPrice = $basePrice;
                 if ($optionPrice > 0) {
-                    $varPrice = $prefix === '-'
-                        ? $basePrice - $optionPrice
-                        : $basePrice + $optionPrice;
+                    $varPrice = $prefix === '-' ? $basePrice - $optionPrice : $basePrice + $optionPrice;
                 }
 
-                // Buscar o crear la variación
-                if (isset($existingMap[$tpvValId])) {
-                    $varId = $existingMap[$tpvValId];
-                } else {
+                $nueva = false;
+                if (isset($plan['emparejadas'][$tpvValId])) {
+                    $varId = (int) $plan['emparejadas'][$tpvValId];
+                    if ((int) ($existentes[$varId]['pov'] ?? 0) !== $tpvValId) {
+                        update_post_meta($varId, '_tpv_option_value_id', $tpvValId);   // adoptada
+                    }
+                } elseif (isset($plan['crear'][$tpvValId])) {
                     $varId = wp_insert_post([
                         'post_parent' => $postId,
                         'post_type'   => 'product_variation',
@@ -2824,31 +2998,33 @@ class TPV_Sync_Product_Sync
                     ]);
                     if (is_wp_error($varId)) continue;
                     update_post_meta($varId, '_tpv_option_value_id', $tpvValId);
+                    $nueva = true;
+                } else {
+                    continue;   // estructura incompatible y sin pareja: se deja a Woo
                 }
 
-                $processedVarIds[] = $varId;
+                if ($nueva || ($plan['compatible'] && (int) ($existentes[$varId]['pov'] ?? 0) !== $tpvValId)) {
+                    $termSlug = $termSlugs[$attrKey][$valueName] ?? sanitize_title($valueName);
+                    update_post_meta($varId, 'attribute_' . $attrKey, $termSlug);
+                }
 
-                // Atributo de esta variación (slug del term para taxonomía global)
-                $termObj = get_term_by('name', $valueName, $attrKey);
-                $termSlug = $termObj ? $termObj->slug : sanitize_title($valueName);
-                update_post_meta($varId, 'attribute_' . $attrKey, $termSlug);
-
-                // Stock
                 update_post_meta($varId, '_manage_stock',  'yes');
                 update_post_meta($varId, '_stock',         $quantity);
                 update_post_meta($varId, '_stock_status',  $quantity > 0 ? 'instock' : 'outofstock');
-
-                // Precio de la variación
-                update_post_meta($varId, '_price',         wc_format_decimal($varPrice));
-                update_post_meta($varId, '_regular_price', wc_format_decimal($varPrice));
+                // El precio solo se escribe en las nuevas o cuando el TPV manda
+                // el catálogo: una rebaja puesta en Woo no se pisa por un stock.
+                if ($nueva || get_option('tpv_sync_principal', '') === 'tpv') {
+                    update_post_meta($varId, '_price',         wc_format_decimal($varPrice));
+                    update_post_meta($varId, '_regular_price', wc_format_decimal($varPrice));
+                }
             }
         }
 
-        // ── 3. Eliminar variaciones huérfanas (ya no existen en el TPV) ───────
-        foreach ($existingMap as $tpvValId => $varId) {
-            if (!in_array($varId, $processedVarIds, true)) {
-                wp_delete_post($varId, true);
-            }
+        // ── 3. Sobrantes: valor que el TPV ya no tiene → privada y agotada ───
+        foreach ($plan['sobrantes'] as $varId) {
+            wp_update_post(['ID' => $varId, 'post_status' => 'private']);
+            update_post_meta($varId, '_stock', 0);
+            update_post_meta($varId, '_stock_status', 'outofstock');
         }
 
         // ── 4. Sincronizar precios mín/máx del producto padre ─────────────────
