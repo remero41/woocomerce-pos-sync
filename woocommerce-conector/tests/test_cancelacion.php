@@ -77,6 +77,7 @@ function run_cancelacion_tests(WooTestRunner $t): void
         $t->assertEquals(1.0, $api->devueltas['wc-cancel-1-10']['quantity'], 'A: quedaba 1 de 2');
         $t->assertEquals(12, $api->devueltas['wc-cancel-1-12']['order_product_id'], 'la talla vuelve a SU línea');
         $t->assert(str_contains((string) $api->devueltas['wc-cancel-1-10']['comment'], 'cancelled'), 'el motivo viaja');
+        $t->assertEquals(true, $api->devueltas['wc-cancel-1-10']['restock'] ?? null, 'la cancelación repone stock siempre');
         $t->assertEquals(0, count($GLOBALS['wpdb']->cola), 'sin cola: todo entró');
     });
 

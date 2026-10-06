@@ -38,12 +38,10 @@ con el código anterior y mutantes que lo vuelven a romper.
 
 ## Lo que queda (decisiones y riesgos)
 
-- **Reposición de stock al cancelar en Woo.** La devolución del TPV repone
-  stock solo si la tienda tiene «reponer en devoluciones» activo
-  (`refund_in_stock`; en tpv200 está a 0). Woo sí repone al cancelar. Con el
-  ajuste a 0, el TPV y la web divergen en stock tras una cancelación online.
-  Hay que decidir si una cancelación online (mercancía que no salió) repone
-  siempre.
+- **Reposición de stock al cancelar en Woo: decidido (07-10).** Una venta
+  online cancelada repone stock en el TPV siempre. El plugin manda
+  `restock: true` en la devolución y la API lo respeta aunque «reponer en
+  devoluciones» esté a 0. Los reembolsos parciales siguen el ajuste.
 - **Entrega de webhooks dentro del proceso PHP.** Tras responder, el mismo
   worker de PHP entrega los webhooks en serie con 10 s de tiempo máximo por
   destino. Una tienda lenta retiene workers de la API. Recomendado: que la

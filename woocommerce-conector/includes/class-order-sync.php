@@ -549,6 +549,11 @@ class TPV_Sync_Order_Sync
                 'comment'          => $motivo . " (WC #{$wcOrderId})",
                 'return_reason_id' => 0,
                 'return_action_id' => 0,
+                // Venta cancelada en la tienda: la mercancía vuelve al stock
+                // del TPV aunque la tienda tenga desactivado «reponer en
+                // devoluciones», igual que Woo repone al cancelar (decisión del
+                // usuario, 07-10-2026). Una API sin el campo lo ignora.
+                'restock'          => true,
             ], "wc-cancel-{$wcOrderId}-{$opid}");
             if (!(int) ($r['data']['return_id'] ?? $r['return_id'] ?? 0)) {
                 $errores++;
