@@ -1300,7 +1300,9 @@ class TPV_Sync_Product_Sync
             $cursor = null;
             $pageGuard = 0;
             do {
-                $params = ['per_page' => 200, 'fields' => 'product_id,model,sku'];
+                // per_page 100: la API recorta a ese máximo (pedir 200 hacía
+                // creer que el tope de páginas cubría el doble).
+                $params = ['per_page' => 100, 'fields' => 'product_id,model,sku'];
                 if ($cursor !== null) { $params['cursor'] = $cursor; }
                 $r = $this->api->get('/products', $params);
                 foreach (($r['data'] ?? []) as $row) {
@@ -1323,7 +1325,10 @@ class TPV_Sync_Product_Sync
                 }
                 $cursor = $r['meta']['cursor'] ?? null;
                 $pageGuard++;
-            } while ($cursor !== null && $pageGuard < 100);
+            // Tope de seguridad contra un cursor que no avance: 2.000 páginas =
+            // 200.000 productos. Con 100 páginas un catálogo de más de 10.000
+            // productos quedaba a medias y el resto se daba de alta duplicado.
+            } while ($cursor !== null && $pageGuard < 2000);
         } catch (Throwable $e) {
             $this->log('error', 0, 'precarga TPV catalog: ' . $e->getMessage());
         }
@@ -1687,6 +1692,12 @@ class TPV_Sync_Product_Sync
         );
         $tpvId = self::resolverEnlace($postId, $ids['model'], $ids['sku'], $this->getTpvCatalogIndex(),
             fn (int $tid): int => $this->find_wc_post($tid));
+        if ($tpvId <= 0) {
+            // Antes de dar de alta, se pregunta al TPV por el código exacto: el
+            // índice es una foto (un alta de hace un momento no está) y un alta
+            // de más deja dos productos con el mismo código en la caja.
+            $tpvId = $this->buscarGemeloExacto($postId, $ids['model'], $ids['sku']);
+        }
         if ($tpvId > 0) {
             update_post_meta($postId, self::TPV_ID_META, $tpvId);
             $this->log('ok', $tpvId, "Enlazado al asegurar post=$postId ↔ TPV id=$tpvId");
@@ -1694,6 +1705,32 @@ class TPV_Sync_Product_Sync
         }
         $this->push_wc_product_to_tpv($postId, true);
         return (int) get_post_meta($postId, self::TPV_ID_META, true);
+    }
+
+    /**
+     * Gemelo en el TPV por igualdad EXACTA de model o sku (la búsqueda de la
+     * API es un LIKE: «ABC» encuentra «ABC-2»). Libre, o ya de este post.
+     */
+    private function buscarGemeloExacto(int $postId, string $model, string $sku): int
+    {
+        foreach (array_unique(array_filter([$model, $sku], 'strlen')) as $codigo) {
+            $r = $this->api->get('/products', ['search' => $codigo, 'per_page' => 100, 'fields' => 'product_id,model,sku']);
+            if (!TPV_Sync_API_Client::fueBien($r)) {
+                continue;
+            }
+            foreach ((array) ($r['data'] ?? []) as $fila) {
+                $tid = (int) ($fila['product_id'] ?? 0);
+                $igual = ($model !== '' && (string) ($fila['model'] ?? '') === $model)
+                      || ($sku !== '' && (string) ($fila['sku'] ?? '') === $sku);
+                if ($tid > 0 && $igual) {
+                    $dueno = $this->find_wc_post($tid);
+                    if ($dueno === 0 || $dueno === $postId) {
+                        return $tid;
+                    }
+                }
+            }
+        }
+        return 0;
     }
 
     /**
