@@ -185,6 +185,7 @@ run_sin_gestion_pedidos_tpv_tests($t);
 run_cola_stock_delta_tests($t);
 run_firma_legacy_replay_tests($t);
 run_variaciones_plan_tests($t);
+run_repaso_stock_csv_tests($t);
 run_cancelacion_tests($t);
 run_stock_tpv_a_woo_tests($t);
 run_pvp_tests($t);

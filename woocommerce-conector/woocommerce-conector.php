@@ -419,17 +419,20 @@ add_action('plugins_loaded', function () {
 });
 
 // ─── Cron: repaso de stock tras un CSV en el TPV ─────────────────────────────
-// Catálogo entero (límite 0), con la política de stock del comerciante. El
-// volcado completo (import_all) solo lo lanza el asistente, a mano.
+// Catálogo entero, con la política de stock del comerciante, por páginas de
+// 100: cada pasada programa la siguiente con su cursor. Una sola pasada sobre
+// miles de productos no cabe en el tiempo de un WP-Cron (el hosting la corta
+// y no queda rastro). El volcado completo (import_all) solo lo lanza el
+// asistente, a mano.
 
-add_action('tpv_sync_reconcile_stock_total', function () {
-    if (class_exists('TPV_Sync') && tpv_sync_module_catalog()) {
-        TPV_Sync::instance()->products->reconcile(0);
+function tpv_sync_repaso_stock_pagina($cursor = ''): void
+{
+    if (!class_exists('TPV_Sync') || !tpv_sync_module_catalog()) return;
+    $stats = TPV_Sync::instance()->products->reconcile(100, $cursor !== '' ? (string) $cursor : null);
+    if (!empty($stats['next_cursor'])) {
+        wp_schedule_single_event(time() + 10, 'tpv_sync_reconcile_stock_total', [(string) $stats['next_cursor']]);
     }
-});
+}
+add_action('tpv_sync_reconcile_stock_total', 'tpv_sync_repaso_stock_pagina', 10, 1);
 // Compat: un evento ya programado por una versión anterior no debe volcar el catálogo.
-add_action('tpv_sync_import_all', function () {
-    if (class_exists('TPV_Sync') && tpv_sync_module_catalog()) {
-        TPV_Sync::instance()->products->reconcile(0);
-    }
-});
+add_action('tpv_sync_import_all', static function () { tpv_sync_repaso_stock_pagina(''); });

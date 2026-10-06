@@ -548,7 +548,7 @@ class TPV_Sync_Webhook
                     // el STOCK de todo el catálogo con la política de siempre
                     // (reconcile: manda el TPV salvo que se diga lo contrario); el
                     // catálogo viaja por sus avisos producto a producto.
-                    wp_schedule_single_event(time() + 60, 'tpv_sync_reconcile_stock_total');
+                    wp_schedule_single_event(time() + 60, 'tpv_sync_reconcile_stock_total', ['']);
                     $this->log($eventType, 0, 'CSV importado en TPV — repaso de stock programado en 60s');
                     break;
 
