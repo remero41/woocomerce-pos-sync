@@ -653,12 +653,18 @@ function run_firma_webhook_tests(WooTestRunner $t): void
             'el ts va dentro del material firmado: es lo que impide reenviar una entrega vieja');
     });
 
-    // El formato legacy sigue valiendo: un TPV sin actualizar debe seguir
-    // entregando mientras se despliega la flota.
-    $t->test('el formato legacy sha256= se sigue aceptando', function ($t) use ($secret, $body) {
-        $legacy = 'sha256=' . hash_hmac('sha256', $body, $secret);
-        $t->assert(VerificadorFirma::verify_signature($body, $legacy, $secret, 0) === true,
+    // El formato anterior con la marca de tiempo firmada sigue valiendo (TPV
+    // sin actualizar); el del cuerpo a secas ya no: sin marca de tiempo
+    // firmada una entrega capturada se reenviaba para siempre.
+    $t->test('el formato anterior con timestamp firmado se sigue aceptando', function ($t) use ($secret, $body, $ts) {
+        $conTs = 'sha256=' . hash_hmac('sha256', $ts . "\n" . $body, $secret);
+        $t->assert(VerificadorFirma::verify_signature($body, $conTs, $secret, $ts) === true,
             'no se rompe a los TPV que aún no se han actualizado');
+    });
+    $t->test('el formato del cuerpo a secas (sin timestamp) ya no se acepta', function ($t) use ($secret, $body) {
+        $legacy = 'sha256=' . hash_hmac('sha256', $body, $secret);
+        $t->assert(VerificadorFirma::verify_signature($body, $legacy, $secret, 0) === false, 'sin ts, no');
+        $t->assert(VerificadorFirma::verify_signature($body, $legacy, $secret, time()) === false, 'ni con una cabecera fresca');
     });
 
     $t->test('sin firma o sin secreto se rechaza', function ($t) use ($secret, $body, $ts) {

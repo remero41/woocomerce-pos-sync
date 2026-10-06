@@ -23,18 +23,6 @@ class TPV_Sync_Order_Sync
     /** Pedido retenido: alguna línea no tiene gemelo en el TPV. JSON {desde, faltan}. */
     const PENDIENTE_META = '_tpv_order_pendiente';
 
-    // Mapa WC status → TPV order_status_id
-    // Los IDs corresponden a la tabla 2465_order_status
-    const WC_TO_TPV_STATUS = [
-        'pending'    => 1,  // Pendiente
-        'processing' => 2,  // En proceso
-        'on-hold'    => 1,  // Pendiente
-        'completed'  => 5,  // Completado
-        'cancelled'  => 7,  // Cancelado
-        'refunded'   => 11, // Dinero devuelto
-        'failed'     => 7,  // Cancelado
-    ];
-
     /**
      * $products es obligatorio: sin él una línea sin enlace no se puede
      * asegurar en el TPV, y un Order_Sync «a medias» (el botón de reintentar
@@ -436,15 +424,155 @@ class TPV_Sync_Order_Sync
         $tpvOrderId = (int)get_post_meta($wcOrderId, self::TPV_ORDER_META, true);
         if (!$tpvOrderId) return;
 
-        $tpvStatus = self::WC_TO_TPV_STATUS[$to] ?? null;
-        if (!$tpvStatus) return;
+        $accion = self::accionPorEstadoWc($to);
+        if ($accion === null) return;
 
-        $this->api->patch("/orders/{$tpvOrderId}/status", [
-            'order_status_id' => $tpvStatus,
+        if ($accion === 'devolver') {
+            // Una venta que ya entró en el TPV (cobrada y con factura) no se
+            // puede «cancelar»: la API lo prohíbe (1→7 con cobros). Lo que
+            // la deshace es una devolución de todo lo que quede por devolver,
+            // que repone el stock y genera la rectificativa. Antes se mandaba
+            // el estado 7, la API lo rechazaba con 422 y el plugin registraba
+            // «ok»: la venta se quedaba viva en el TPV con su stock restado.
+            $this->devolverTodo($wcOrderId, "Pedido {$to} en WooCommerce");
+            return;
+        }
+
+        $r = $this->api->patch("/orders/{$tpvOrderId}/status", [
+            'order_status_id' => $accion,
             'comment'         => "Estado actualizado desde WooCommerce: {$to}",
         ]);
+        if (TPV_Sync_API_Client::fueBien($r)) {
+            $this->log($wcOrderId, 'ok', "Estado WC '{$to}' → TPV status_id={$accion}");
+        } else {
+            $this->log($wcOrderId, 'error', "Estado WC '{$to}' → TPV status_id={$accion} rechazado: "
+                . substr((string) ($r['errors'][0]['message'] ?? wp_json_encode($r)), 0, 300));
+        }
+    }
 
-        $this->log($wcOrderId, 'ok', "Estado WC '{$to}' → TPV status_id={$tpvStatus}");
+    /**
+     * Qué hace el TPV con un estado de WooCommerce. Función pura.
+     *
+     *  - int: PATCH /orders/{id}/status con ese estado del TPV. Solo el 5
+     *    (entregado) tiene transición permitida para la API desde el 1.
+     *  - 'devolver': la tienda deshizo la venta (cancelada, reembolsada,
+     *    fallida tras cobrar): devolución de lo que quede.
+     *  - null: nada que hacer (pendiente, en proceso, en espera... el TPV ya
+     *    tiene la venta y no gestiona el pedido).
+     */
+    public static function accionPorEstadoWc(string $estadoWc): int|string|null
+    {
+        return match ($estadoWc) {
+            'completed'                       => 5,
+            'cancelled', 'refunded', 'failed' => 'devolver',
+            default                           => null,
+        };
+    }
+
+    /**
+     * Lo que queda por devolver de cada línea del pedido del TPV, a partir
+     * de GET /orders/{id} (líneas) y GET /orders/{id}/returns (devoluciones
+     * hechas; la API guarda la línea en comment como «{opid}|...»). Función
+     * pura. Las líneas de descuento (model DISCOUNT) y las sin cantidad no
+     * cuentan.
+     *
+     * @return array<int, array{product_id:int, quantity:float, name:string}> opid => pendiente
+     */
+    public static function pendientesDeDevolver(array $lineasTpv, array $devoluciones): array
+    {
+        $devueltoPorLinea    = [];
+        $devueltoPorProducto = [];
+        foreach ($devoluciones as $d) {
+            if ((int) ($d['return_status_id'] ?? 3) === 4) continue;   // cancelada
+            $qty  = (float) ($d['quantity'] ?? 0);
+            $opid = (int) (explode('|', (string) ($d['comment'] ?? ''), 2)[0] ?? 0);
+            if ($opid > 0) {
+                $devueltoPorLinea[$opid] = ($devueltoPorLinea[$opid] ?? 0.0) + $qty;
+            } else {
+                $pid = (int) ($d['product_id'] ?? 0);
+                $devueltoPorProducto[$pid] = ($devueltoPorProducto[$pid] ?? 0.0) + $qty;
+            }
+        }
+        $pendientes = [];
+        foreach ($lineasTpv as $l) {
+            $opid = (int) ($l['order_product_id'] ?? 0);
+            $pid  = (int) ($l['product_id'] ?? 0);
+            $qty  = (float) ($l['quantity'] ?? 0);
+            if ($opid <= 0 || $pid <= 0 || $qty <= 0 || (string) ($l['model'] ?? '') === 'DISCOUNT') continue;
+            $resta = $qty - ($devueltoPorLinea[$opid] ?? 0.0);
+            // Devoluciones antiguas sin línea: se imputan al primer producto
+            // que las absorba, para no devolver dos veces.
+            if ($resta > 0 && ($devueltoPorProducto[$pid] ?? 0.0) > 0) {
+                $usa = min($resta, $devueltoPorProducto[$pid]);
+                $resta -= $usa;
+                $devueltoPorProducto[$pid] -= $usa;
+            }
+            if ($resta > 0.0001) {
+                $pendientes[$opid] = ['product_id' => $pid, 'quantity' => round($resta, 4),
+                                      'name' => (string) ($l['name'] ?? '')];
+            }
+        }
+        return $pendientes;
+    }
+
+    /**
+     * Devuelve en el TPV todo lo que quede por devolver del pedido (cancelación
+     * o reembolso total hecho en la tienda). Idempotente: lo ya devuelto no se
+     * vuelve a mandar, y cada línea lleva su clave. Si algo falla, va a la cola.
+     *
+     * @return bool true si no queda nada pendiente
+     */
+    public function devolverTodo(int $wcOrderId, string $motivo): bool
+    {
+        $tpvOrderId = (int) get_post_meta($wcOrderId, self::TPV_ORDER_META, true);
+        if (!$tpvOrderId) return true;
+
+        $pedido = $this->api->get("/orders/{$tpvOrderId}");
+        $devs   = $this->api->get("/orders/{$tpvOrderId}/returns");
+        if (!TPV_Sync_API_Client::fueBien($pedido) || !TPV_Sync_API_Client::fueBien($devs)) {
+            $this->log($wcOrderId, 'error', "Devolución total: el TPV no contestó (pedido #{$tpvOrderId})");
+            $this->encolar('order.cancel', ['wc_order_id' => $wcOrderId, 'motivo' => $motivo], 'tpv sin respuesta');
+            return false;
+        }
+        $pendientes = self::pendientesDeDevolver((array) ($pedido['data']['products'] ?? []), (array) ($devs['data'] ?? []));
+        if (empty($pendientes)) {
+            $this->log($wcOrderId, 'ok', "Devolución total: nada pendiente en el pedido #{$tpvOrderId}");
+            return true;
+        }
+        $errores = 0;
+        foreach ($pendientes as $opid => $linea) {
+            $r = $this->api->post("/orders/{$tpvOrderId}/returns", [
+                'product_id'       => $linea['product_id'],
+                'order_product_id' => $opid,
+                'quantity'         => $linea['quantity'],
+                'product_name'     => $linea['name'],
+                'comment'          => $motivo . " (WC #{$wcOrderId})",
+                'return_reason_id' => 0,
+                'return_action_id' => 0,
+            ], "wc-cancel-{$wcOrderId}-{$opid}");
+            if (!(int) ($r['data']['return_id'] ?? $r['return_id'] ?? 0)) {
+                $errores++;
+                $this->log($wcOrderId, 'error', "Devolución total línea {$opid}: "
+                    . substr((string) ($r['errors'][0]['message'] ?? wp_json_encode($r)), 0, 300));
+            }
+        }
+        if ($errores > 0) {
+            $this->encolar('order.cancel', ['wc_order_id' => $wcOrderId, 'motivo' => $motivo], "$errores línea(s) sin devolver");
+            return false;
+        }
+        $order = wc_get_order($wcOrderId);
+        if ($order) {
+            $order->add_order_note("Devuelto en el TPV (pedido #{$tpvOrderId}): {$motivo}.");
+        }
+        $this->log($wcOrderId, 'ok', "Devolución total en el TPV (pedido #{$tpvOrderId}): " . count($pendientes) . ' línea(s)');
+        return true;
+    }
+
+    private function encolar(string $op, array $payload, string $motivo): void
+    {
+        if (class_exists('TPV_Sync') && class_exists('TPV_Sync_Queue')) {
+            TPV_Sync::instance()->queue->enqueue($op, $payload, $motivo);
+        }
     }
 
     // ─── WC → TPV: reembolso ──────────────────────────────────────────────────
@@ -686,7 +814,14 @@ class TPV_Sync_Order_Sync
             '_vat_number', '_billing_eu_vat_number',
         ];
         foreach ($candidates as $k) {
-            $v = get_post_meta($wcOrderId, $k, true);
+            // Por el CRUD del pedido: con el almacén de pedidos de alto
+            // rendimiento (HPOS, el de serie en WooCommerce desde la 8.2) los
+            // metadatos del pedido no están en wp_postmeta y get_post_meta()
+            // devolvía siempre vacío: el NIF nunca llegaba a la factura del TPV.
+            $v = method_exists($order, 'get_meta') ? $order->get_meta($k, true) : '';
+            if (!is_string($v) || $v === '') {
+                $v = get_post_meta($wcOrderId, $k, true);
+            }
             if (is_string($v) && $v !== '') {
                 return apply_filters('tpv_sync_customer_tax_id', trim($v), $order);
             }

@@ -28,6 +28,7 @@ if (!function_exists('wc_format_decimal'))  { function wc_format_decimal($n) { r
 if (!function_exists('wp_set_object_terms')) { function wp_set_object_terms($id, $t, $tax) { return true; } }
 if (!function_exists('wc_delete_product_transients')) { function wc_delete_product_transients($id) {} }
 if (!function_exists('clean_post_cache'))   { function clean_post_cache($id) {} }
+if (!function_exists('get_post_status'))  { function get_post_status($id) { return $GLOBALS['__wp_status'][$id] ?? 'publish'; } }
 if (!function_exists('has_term'))           { function has_term($t, $tax, $id) { return false; } }
 if (!function_exists('get_the_title'))      { function get_the_title($id) { return "Producto $id"; } }
 
