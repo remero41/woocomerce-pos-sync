@@ -450,6 +450,15 @@ class TPV_Sync_API_Client
      */
     public function aceptaPrecioConIva(): bool
     {
+        return $this->tieneCapacidad('price_gross_write');
+    }
+
+    /**
+     * ¿Anuncia la API esta capacidad en /health? Se pregunta una vez y se
+     * recuerda una hora; ante cualquier duda (API vieja, /health caído), no.
+     */
+    public function tieneCapacidad(string $cap): bool
+    {
         if ($this->capacidades === null) {
             $cache = function_exists('get_transient') ? get_transient('tpv_sync_api_capacidades') : false;
             if (is_array($cache)) {
@@ -471,7 +480,7 @@ class TPV_Sync_API_Client
                 }
             }
         }
-        return in_array('price_gross_write', $this->capacidades, true);
+        return in_array($cap, $this->capacidades, true);
     }
 
     private function headers(bool $escritura = false): array

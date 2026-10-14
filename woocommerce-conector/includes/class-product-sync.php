@@ -8,9 +8,19 @@ declare(strict_types=1);
  */
 defined('ABSPATH') || exit;
 
+// Sus dependencias, aquí y no solo en el fichero principal: quien cargue esta
+// clase suelta (tests, CLI) las necesita igual.
+require_once __DIR__ . '/class-categorias.php';
+require_once __DIR__ . '/class-terminos.php';
+require_once __DIR__ . '/class-categorias-sync.php';
+
 class TPV_Sync_Product_Sync
 {
     private TPV_Sync_API_Client $api;
+    /** Categorías Woo ↔ TPV (SPEC_categorias_woo_tpv.md). */
+    public TPV_Sync_Categorias_Sync $categorias;
+    /** true mientras corre un volcado o una reconciliación: las categorías se juntan, no se sustituyen. */
+    private bool $juntarCategorias = false;
 
     // Meta key para mapear product_id del TPV con el post_id de WC
     const TPV_ID_META           = '_tpv_product_id';
@@ -20,11 +30,11 @@ class TPV_Sync_Product_Sync
      */
     const A_PESO_META           = '_tpv_a_peso';
     const TPV_CUSTOMER_META     = '_tpv_customer_id';
-    const TPV_CATEGORY_TERM_META = 'tpv_category_id'; // termmeta
 
     public function __construct(TPV_Sync_API_Client $api)
     {
         $this->api = $api;
+        $this->categorias = new TPV_Sync_Categorias_Sync($api, new TPV_Sync_Terminos());
     }
 
     // ─── Customer sync desde TPV → WC ────────────────────────────────────────
@@ -119,66 +129,27 @@ class TPV_Sync_Product_Sync
         return $login;
     }
 
-    // ─── Category sync desde TPV → WC ────────────────────────────────────────
-
-    public function sync_category_from_tpv(int $tpvCategoryId, array $fields): void
-    {
-        if ($tpvCategoryId <= 0) return;
-        $name = sanitize_text_field($fields['name'] ?? '');
-        if ($name === '') return;
-
-        // Buscar term existente por termmeta
-        global $wpdb;
-        $termId = (int)$wpdb->get_var($wpdb->prepare(
-            "SELECT term_id FROM {$wpdb->termmeta}
-             WHERE meta_key = %s AND meta_value = %d LIMIT 1",
-            self::TPV_CATEGORY_TERM_META, $tpvCategoryId
-        ));
-
-        $taxonomy = 'product_cat';
-
-        if ($termId) {
-            wp_update_term($termId, $taxonomy, ['name' => $name]);
-        } else {
-            // Buscar también por nombre para no duplicar
-            $existing = get_term_by('name', $name, $taxonomy);
-            if ($existing) {
-                $termId = (int)$existing->term_id;
-            } else {
-                $result = wp_insert_term($name, $taxonomy);
-                if (is_wp_error($result)) {
-                    $this->log('error', $tpvCategoryId, 'wp_insert_term: ' . $result->get_error_message());
-                    return;
-                }
-                $termId = (int)$result['term_id'];
-            }
-        }
-        update_term_meta($termId, self::TPV_CATEGORY_TERM_META, $tpvCategoryId);
-
-        $this->log('ok', $tpvCategoryId, "Category WC term_id={$termId} sincronizada (name={$name})");
-    }
-
-    public function delete_wc_category_by_tpv_id(int $tpvCategoryId): void
-    {
-        if ($tpvCategoryId <= 0) return;
-        global $wpdb;
-        $termId = (int)$wpdb->get_var($wpdb->prepare(
-            "SELECT term_id FROM {$wpdb->termmeta}
-             WHERE meta_key = %s AND meta_value = %d LIMIT 1",
-            self::TPV_CATEGORY_TERM_META, $tpvCategoryId
-        ));
-        if (!$termId) return;
-        wp_delete_term($termId, 'product_cat');
-        $this->log('ok', $tpvCategoryId, "Category WC term_id={$termId} eliminada");
-    }
-
     // ─── Importación completa ─────────────────────────────────────────────────
 
     /**
      * Importa todos los productos del TPV. Llamado manualmente desde el panel.
      * Devuelve ['created'=>N, 'updated'=>N, 'errors'=>N]
      */
+    /**
+     * Volcado TPV → Woo del asistente. Mientras corre, las categorías de cada
+     * producto se JUNTAN con las de Woo, no se sustituyen (spec §4).
+     */
     public function import_all(array $options = []): array
+    {
+        $this->juntarCategorias = true;
+        try {
+            return $this->importarTodo($options);
+        } finally {
+            $this->juntarCategorias = false;
+        }
+    }
+
+    private function importarTodo(array $options): array
     {
         @set_time_limit(600);
         @ini_set('max_execution_time', '600');
@@ -486,9 +457,14 @@ class TPV_Sync_Product_Sync
             $this->maybe_set_image($postId, $p['image'], $tpvId);
         }
 
-        // Categorías
-        if (!empty($p['categories']) && is_array($p['categories'])) {
-            $this->sync_categories($postId, $p['categories']);
+        // Categorías por número (SPEC_categorias_woo_tpv.md §3 C3): sin marca
+        // no se tocan; en 'arbol' y en los volcados se juntan; en 'completa'
+        // un aviso las sustituye, lista vacía incluida.
+        $faseCategorias = TPV_Sync_Categorias_Sync::fase();
+        if ($faseCategorias !== '' && isset($p['categories']) && is_array($p['categories'])) {
+            $ids = array_map(static fn ($c) => (int) ($c['category_id'] ?? 0), $p['categories']);
+            $this->categorias->ponerCategoriasDesdeTpv($postId, $ids,
+                $this->juntarCategorias || $faseCategorias !== 'completa');
         }
 
         // Opciones/variantes
@@ -1128,6 +1104,7 @@ class TPV_Sync_Product_Sync
         $taxClassId = $this->resolveTpvTaxClassId($product);
         if ($taxClassId > 0) $payload['tax_class_id'] = $taxClassId;
         $payload += $this->rebajaParaTpv($product, $postId);
+        $payload += $this->categorias->paraPayload($postId, (int) get_post_meta($postId, self::TPV_ID_META, true) <= 0);
 
         if ($product->is_type('variable')) {
             $options = $this->build_options_for_tpv($product);
@@ -1801,6 +1778,13 @@ class TPV_Sync_Product_Sync
                 // al TPV a medias. Todo lo vendible existe en el TPV.
                 return $this->asegurarEnTpv($postId) > 0;
             }
+            // Las categorías ignoran «quién manda» (SPEC_categorias_woo_tpv.md
+            // D1): las de la web llegan al TPV antes de releer el producto; si
+            // no, la relectura las borraría. En 'arbol' no se sustituye nada.
+            $cats = $this->categorias->paraPayload($postId, false);
+            if ($cats) {
+                $this->api->patch("/products/$tpvId", $cats);
+            }
             // Producto sincronizado: revertimos al estado del TPV.
             $GLOBALS['tpv_sync_skip_wc_product_push'] = true;
             try {
@@ -1897,6 +1881,7 @@ class TPV_Sync_Product_Sync
         $taxClassId = $this->resolveTpvTaxClassId($product);
         if ($taxClassId > 0) $payload['tax_class_id'] = $taxClassId;
         $payload += $this->rebajaParaTpv($product, $postId);
+        $payload += $this->categorias->paraPayload($postId, (int) get_post_meta($postId, self::TPV_ID_META, true) <= 0);
 
         // Si el producto es variable con variaciones, construimos la estructura
         // `options` que la API del TPV entiende (ver ProductController::syncOptions).
@@ -2745,30 +2730,6 @@ class TPV_Sync_Product_Sync
         }
     }
 
-    // ─── Categorías ───────────────────────────────────────────────────────────
-
-    private function sync_categories(int $postId, array $categories): void
-    {
-        $termIds = [];
-        foreach ($categories as $cat) {
-            $name = sanitize_text_field($cat['name'] ?? '');
-            if (!$name) continue;
-
-            $term = get_term_by('name', $name, 'product_cat');
-            if (!$term) {
-                $result = wp_insert_term($name, 'product_cat');
-                if (is_wp_error($result)) continue;
-                $termIds[] = (int)$result['term_id'];
-            } else {
-                $termIds[] = (int)$term->term_id;
-            }
-        }
-
-        if ($termIds) {
-            wp_set_object_terms($postId, $termIds, 'product_cat');
-        }
-    }
-
     // ─── Variaciones de producto ──────────────────────────────────────────────
 
     /**
@@ -3179,7 +3140,18 @@ class TPV_Sync_Product_Sync
      * @param bool       $dryRun   true = solo cuenta y devuelve ejemplos, no escribe.
      * @param array      $politica Sobrescribe el dueño por dominio para esta pasada.
      */
+    /** La reconciliación cuenta como volcado: junta categorías (spec §3 C3). */
     public function reconcileBidirectional(bool $dryRun = false, array $politica = []): array
+    {
+        $this->juntarCategorias = true;
+        try {
+            return $this->reconciliarBidireccional($dryRun, $politica);
+        } finally {
+            $this->juntarCategorias = false;
+        }
+    }
+
+    private function reconciliarBidireccional(bool $dryRun, array $politica): array
     {
         global $wpdb;
         $stats = ['checked' => 0, 'synced' => 0, 'fixed' => 0, 'skipped' => 0, 'errors' => 0,

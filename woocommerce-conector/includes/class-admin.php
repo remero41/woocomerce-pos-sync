@@ -1966,6 +1966,7 @@ class TPV_Sync_Admin
                 <span class="cc-health-when"><?= esc_html($h['last_error']['created_at'] ?? '') ?></span>
             </p>
             <?php endif; ?>
+            <?= self::htmlAvisosCategorias((array) get_option(TPV_Sync_Categorias_Sync::AVISOS, [])) ?>
             <?php /* ── ¿Cobran lo mismo la web y la tienda? (SPEC_pvp_tienda_caja, fase 2)
                  La autocuración compara cada 6 h lo que cobra la web con lo que
                  cobra el TPV y corrige el TPV sola. Aquí solo se cuenta el
@@ -3247,6 +3248,11 @@ class TPV_Sync_Admin
 
         try {
             $sync = new TPV_Sync_Product_Sync(new TPV_Sync_API_Client());
+            // Primer paso del asistente: unir los árboles de categorías antes
+            // que los productos (SPEC_categorias_woo_tpv.md §4).
+            if ($reset && TPV_Sync_Categorias_Sync::fase() === '') {
+                $sync->categorias->unirArbol();
+            }
             $stats = $sync->import_all(['offset' => $offset, 'limit' => $batchSize]);
 
             update_option('tpv_sync_pull_created_total',
@@ -3372,6 +3378,11 @@ class TPV_Sync_Admin
         ]);
 
         $sync   = new TPV_Sync_Product_Sync(new TPV_Sync_API_Client());
+        // Primer paso del asistente: unir los árboles de categorías antes que
+        // los productos (SPEC_categorias_woo_tpv.md §4).
+        if ($reset && TPV_Sync_Categorias_Sync::fase() === '') {
+            $sync->categorias->unirArbol();
+        }
         $sent = 0; $skipped = 0; $errors = 0;
         $errorMessages = [];
 
@@ -3524,6 +3535,9 @@ class TPV_Sync_Admin
         $unlinked = $wpdb->query(
             "DELETE FROM {$metaTable} WHERE meta_key = '_tpv_product_id'"
         );
+        // Los enlaces de categorías eran de esa conexión: al volver a conectar,
+        // la unión los rehace (desde la API si es el mismo TPV).
+        (new TPV_Sync_Product_Sync(new TPV_Sync_API_Client()))->categorias->olvidar();
 
         $parts = [];
         $parts[] = sprintf(__('%d productos desvinculados', 'tpv-sync'), (int)$unlinked);
@@ -3591,6 +3605,23 @@ class TPV_Sync_Admin
      * Los nombres tienen que existir en WebhookController::VALID_EVENTS de la
      * API; uno inventado hace que la suscripción entera falle con 422.
      */
+    /**
+     * Avisos de la sincronización de categorías (SPEC_categorias_woo_tpv.md):
+     * categorías sin pareja (otra igual al mismo nivel) o sin permiso. Lo más
+     * reciente arriba; vacío si no hay nada que decir.
+     */
+    public static function htmlAvisosCategorias(array $avisos): string
+    {
+        if (!$avisos) return '';
+        $li = '';
+        foreach (array_reverse($avisos) as $a) {
+            $li .= '<li>' . esc_html((string) $a) . '</li>';
+        }
+        return '<div class="cc-health-categorias"><strong>'
+            . esc_html__('Categorías sin pareja o sin permiso', 'tpv-sync')
+            . '</strong><ul>' . $li . '</ul></div>';
+    }
+
     public static function eventosSuscritos(bool $catalogo): array
     {
         return array_values(array_filter([
@@ -3614,6 +3645,12 @@ class TPV_Sync_Admin
             'customer.created',
             'customer.updated',
             'customer.deleted',
+            // Categorías en los dos sentidos (SPEC_categorias_woo_tpv.md C1).
+            // Faltaban desde el commit inicial: el handler las trataba, pero
+            // nunca llegaban.
+            $catalogo ? 'category.created' : null,
+            $catalogo ? 'category.updated' : null,
+            $catalogo ? 'category.deleted' : null,
         ]));
     }
 
@@ -3818,6 +3855,8 @@ class TPV_Sync_Admin
             try { $api->post('/auth/disconnect', []); } catch (Throwable $e) {}
         }
         // 3) Limpieza total local — el plugin queda como recién instalado
+        //    (también los enlaces de categorías: pueden reconectarlo a otro TPV)
+        (new TPV_Sync_Product_Sync(new TPV_Sync_API_Client()))->categorias->olvidar();
         $keys = [
             'tpv_sync_api_url',
             'tpv_sync_client_id',
