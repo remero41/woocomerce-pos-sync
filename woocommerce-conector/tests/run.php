@@ -197,5 +197,7 @@ run_venta_a_peso_tests($t);
 
 require_once __DIR__ . '/test_categorias_puras.php';
 run_categorias_puras_tests($t);
+require_once __DIR__ . '/test_terminos_en_memoria.php';
+run_terminos_en_memoria_tests($t);
 
 exit($t->summary());
