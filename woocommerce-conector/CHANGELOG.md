@@ -1,4 +1,4 @@
-## Sin publicar
+## 2.11.0
 
 ### Los pedidos por transferencia llegan al TPV
 
