@@ -37,6 +37,7 @@ require_once TPV_SYNC_DIR . 'includes/class-stock.php';
 require_once TPV_SYNC_DIR . 'includes/class-precio-variantes.php';
 require_once TPV_SYNC_DIR . 'includes/class-precio-pvp.php';
 require_once TPV_SYNC_DIR . 'includes/class-reconciler.php';
+require_once TPV_SYNC_DIR . 'includes/class-categorias.php';
 require_once TPV_SYNC_DIR . 'includes/class-product-sync.php';
 require_once TPV_SYNC_DIR . 'includes/class-order-sync.php';
 require_once TPV_SYNC_DIR . 'includes/class-customer-sync.php';
