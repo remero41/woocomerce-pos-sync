@@ -1,4 +1,4 @@
-## Sin publicar
+## 2.12.0
 
 ### Las categorías se sincronizan en los dos sentidos
 
