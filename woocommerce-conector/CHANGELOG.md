@@ -1,5 +1,15 @@
 ## Sin publicar
 
+### Los pedidos por transferencia llegan al TPV
+
+- **Un pedido pagado por transferencia que se marcaba «completado» a mano no
+  llegaba nunca al TPV.** WooCommerce lo deja «en espera» hasta que llega el
+  dinero y, cuando el tendero lo daba por completado, el conector no se
+  enteraba: solo oía el aviso de pago de las pasarelas y el paso a
+  «procesando». Según el botón que se pulsara, la venta existía o no en la
+  caja. Ahora «completado» también envía el pedido (y su estado) al TPV. Un
+  pedido «en espera» sigue sin enviarse: todavía no está cobrado.
+
 ### La tienda cobra solo lo mismo que la web
 
 - **Los precios de la tienda se corrigen solos.** Cada 6 horas el conector
