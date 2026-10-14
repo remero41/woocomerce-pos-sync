@@ -116,4 +116,88 @@ final class TPV_Sync_Categorias_Sync
             $GLOBALS[self::GUARDA] = false;
         }
     }
+
+    /** category_id del término, creándolo (con sus madres) en el TPV si falta. 0 si no se pudo. */
+    public function asegurarEnTpv(int $termId, int $profundidad = 0): int
+    {
+        if ($termId <= 0 || $termId === $this->terminos->porDefecto() || $profundidad > self::PROFUNDIDAD_MAX) return 0;
+        $ya = $this->terminos->tpvIdDe($termId);
+        if ($ya > 0) return $ya;
+        return $this->escribirEnTpv($termId, $profundidad);
+    }
+
+    /**
+     * POST (alta) o PATCH (cambio) del término en el TPV. Un PATCH con 404
+     * (el TPV ya no la tiene) recrea y reenlaza; un 409 (choca con una
+     * hermana en el TPV) se avisa y el enlace sigue; un fallo transitorio
+     * deja el enlace como estaba.
+     */
+    private function escribirEnTpv(int $termId, int $profundidad): int
+    {
+        $padreWoo = $this->terminos->padreDe($termId);
+        $madre = ($padreWoo > 0 && $padreWoo !== $this->terminos->porDefecto())
+            ? $this->asegurarEnTpv($padreWoo, $profundidad + 1) : 0;
+        $cuerpo = ['name' => $this->terminos->nombreDe($termId), 'parent_id' => $madre,
+                   'client_external_id' => (string) $termId];
+        $tpvId = $this->terminos->tpvIdDe($termId);
+        if ($tpvId > 0) {
+            $r = $this->api->patch("/categories/$tpvId", $cuerpo);
+            $estado = (int) ($r['_status'] ?? 0);
+            if ($estado !== 404) {
+                if ($estado === 409) {
+                    $this->avisar(sprintf(
+                        __('La categoría «%s» no se pudo cambiar en el TPV: ya hay otra igual al mismo nivel.', 'tpv-sync'),
+                        $cuerpo['name']));
+                }
+                return $tpvId;
+            }
+        }
+        $r = $this->api->post('/categories', $cuerpo);
+        if (!TPV_Sync_API_Client::fueBien($r) || empty($r['data']['category_id'])) return 0;
+        $tpvId = (int) $r['data']['category_id'];
+        $this->terminos->enlazar($termId, $tpvId);
+        return $tpvId;
+    }
+
+    /** Hooks created_product_cat / edited_product_cat. */
+    public function alGuardarTermino(int $termId): void
+    {
+        if (!empty($GLOBALS[self::GUARDA]) || self::fase() === '' || $termId === $this->terminos->porDefecto()) return;
+        $this->escribirEnTpv($termId, 0);
+    }
+
+    /** Hook pre_delete_term: el termmeta aún existe (en delete_product_cat ya no). */
+    public function antesDeBorrarTermino(int $termId, string $taxonomia): void
+    {
+        if ($taxonomia !== TPV_Sync_Terminos::TAX || !empty($GLOBALS[self::GUARDA]) || self::fase() === '') return;
+        $tpvId = $this->terminos->tpvIdDe($termId);
+        if ($tpvId > 0) {
+            $this->api->delete("/categories/$tpvId");   // 404 = ya no estaba: hecho
+        }
+    }
+
+    /** @return list<int> category_id del TPV de las categorías del producto, sin «Sin categorizar». */
+    public function categoryIdsParaTpv(int $postId): array
+    {
+        $out = [];
+        foreach ($this->terminos->deProducto($postId) as $termId) {
+            $tid = $this->asegurarEnTpv((int) $termId);
+            if ($tid > 0) {
+                $out[] = $tid;
+            }
+        }
+        return TPV_Sync_Categorias::juntar($out);
+    }
+
+    /**
+     * Lo que se añade al cuerpo de un envío de producto Woo → TPV. Sin marca,
+     * nada; en 'arbol', solo en las altas (en una actualización el TPV
+     * conserva las suyas hasta que la unión las junte); en 'completa', siempre.
+     */
+    public function paraPayload(int $postId, bool $esAlta): array
+    {
+        $f = self::fase();
+        if ($f === '' || ($f === 'arbol' && !$esAlta)) return [];
+        return ['category_ids' => $this->categoryIdsParaTpv($postId)];
+    }
 }
