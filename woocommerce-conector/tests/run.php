@@ -203,5 +203,7 @@ require_once __DIR__ . '/test_categorias_tpv_a_woo.php';
 run_categorias_tpv_a_woo_tests($t);
 require_once __DIR__ . '/test_categorias_woo_a_tpv.php';
 run_categorias_woo_a_tpv_tests($t);
+require_once __DIR__ . '/test_categorias_union.php';
+run_categorias_union_tests($t);
 
 exit($t->summary());

@@ -17,9 +17,27 @@ final class TPV_Sync_Categorias_Sync
     public const AVISOS = 'tpv_sync_categorias_avisos';
     /** Anti-eco: mientras se escribe lo que llegó del TPV, los hooks de Woo no envían. */
     public const GUARDA = 'tpv_sync_skip_wc_category_push';
+    /** post_id del último producto enlazado ya juntado en la unión. */
+    public const CURSOR = 'tpv_sync_categorias_cursor';
     private const PROFUNDIDAD_MAX = 20;
 
-    public function __construct(private TPV_Sync_API_Client $api, private TPV_Sync_Terminos $terminos) {}
+    /** @var callable(int,int):list<array{post_id:int,tpv_id:int}> productos enlazados desde un post_id, por tandas */
+    private $productosEnlazados;
+
+    public function __construct(
+        private TPV_Sync_API_Client $api,
+        private TPV_Sync_Terminos $terminos,
+        ?callable $productosEnlazados = null
+    ) {
+        $this->productosEnlazados = $productosEnlazados ?? static function (int $desde, int $lote): array {
+            global $wpdb;
+            $rows = $wpdb->get_results($wpdb->prepare(
+                "SELECT post_id, CAST(meta_value AS UNSIGNED) AS tpv_id FROM {$wpdb->postmeta}
+                  WHERE meta_key = '_tpv_product_id' AND CAST(meta_value AS UNSIGNED) > 0 AND post_id > %d
+                  ORDER BY post_id LIMIT %d", $desde, $lote), ARRAY_A);
+            return array_map(static fn ($r) => ['post_id' => (int) $r['post_id'], 'tpv_id' => (int) $r['tpv_id']], (array) $rows);
+        };
+    }
 
     public static function fase(): string
     {
@@ -199,5 +217,83 @@ final class TPV_Sync_Categorias_Sync
         $f = self::fase();
         if ($f === '' || ($f === 'arbol' && !$esAlta)) return [];
         return ['category_ids' => $this->categoryIdsParaTpv($postId)];
+    }
+
+    // ─── Unión inicial (spec §4) ─────────────────────────────────────────────
+
+    /**
+     * Lo que llama el cron (autocurar) en cada vuelta hasta 'completa'. Sin
+     * la capacidad en /health no pregunta nada: la API todavía no sabe.
+     */
+    public function pasoDeUnion(int $lote = 100): void
+    {
+        if (self::fase() === 'completa') return;
+        if (!$this->api->tieneCapacidad('categories_write')) return;
+        if (self::fase() === '' && !$this->unirArbol()) return;
+        $this->unirProductos($lote);
+    }
+
+    /** Une los dos árboles (solo añade) y pone la marca 'arbol'. false si no se pudo. */
+    public function unirArbol(): bool
+    {
+        $r = $this->api->get('/categories', ['todas' => 1]);
+        if ((int) ($r['_status'] ?? 0) === 403) {
+            $this->avisar(__('La conexión con el TPV no tiene el permiso categories:write: las categorías no se sincronizan hasta que se actualice la API del TPV.', 'tpv-sync'));
+            return false;
+        }
+        if (!TPV_Sync_API_Client::fueBien($r)) return false;
+        $tpv  = array_values((array) ($r['data'] ?? []));
+        $plan = TPV_Sync_Categorias::planUnion($tpv, $this->terminos->todos(), $this->terminos->porDefecto());
+        foreach ($plan['parejas'] as $par) {
+            $this->terminos->enlazar($par['term'], $par['tpv']);
+            $this->api->patch('/categories/' . $par['tpv'], ['client_external_id' => (string) $par['term']]);
+        }
+        $porId = array_column($tpv, null, 'category_id');
+        foreach ($plan['crearEnWoo'] as $tid) {
+            if (isset($porId[$tid])) {
+                $this->escribirEnWoo($porId[$tid], 0);
+            }
+        }
+        foreach ($plan['crearEnTpv'] as $termId) {
+            $this->asegurarEnTpv((int) $termId);
+        }
+        update_option(self::MARCA, 'arbol', false);
+        update_option(self::CURSOR, 0, false);
+        return true;
+    }
+
+    /**
+     * Una tanda de productos enlazados: junta sus categorías en los dos lados.
+     * true cuando no quedan (y pone 'completa').
+     */
+    public function unirProductos(int $lote): bool
+    {
+        $desde = (int) get_option(self::CURSOR, 0);
+        $tanda = ($this->productosEnlazados)($desde, $lote);
+        foreach ($tanda as $e) {
+            $r = $this->api->get('/products/' . $e['tpv_id']);
+            if (TPV_Sync_API_Client::fueBien($r)) {
+                $deTpv = array_map(static fn ($c) => (int) ($c['category_id'] ?? 0), (array) ($r['data']['categories'] ?? []));
+                $this->ponerCategoriasDesdeTpv($e['post_id'], $deTpv, true);
+                $suma = TPV_Sync_Categorias::juntar($deTpv, $this->categoryIdsParaTpv($e['post_id']));
+                if ($suma !== TPV_Sync_Categorias::juntar($deTpv)) {
+                    $this->api->patch('/products/' . $e['tpv_id'], ['category_ids' => $suma]);
+                }
+            }
+            update_option(self::CURSOR, $e['post_id'], false);
+        }
+        if (count($tanda) < $lote) {
+            update_option(self::MARCA, 'completa', false);
+            return true;
+        }
+        return false;
+    }
+
+    /** Reset o desconexión: los enlaces eran de esa conexión. */
+    public function olvidar(): void
+    {
+        $this->terminos->olvidarEnlaces();
+        update_option(self::MARCA, '', false);
+        update_option(self::CURSOR, 0, false);
     }
 }
