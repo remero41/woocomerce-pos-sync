@@ -1,7 +1,7 @@
 # Spec TDD — Categorías sincronizadas en los dos sentidos (Woo ↔ TPV)
 
 Fecha: 2026-10-14 (v2, tras la auditoría de la v1 el mismo día)
-Repos: `woocomerce-pos-sync` (plugin), `api_tpv` (API) y un retoque mínimo en `tpv` (§5.4).
+Repos: `woocomerce-pos-sync` (plugin de la tienda), `api_tpv` (API), `plugin_wordpress_connector` y `plugin_prestashop_connector` (conectores del lado TPV: ámbitos y bridge) y un retoque mínimo en `tpv` (§5.4).
 Caso real: lulubeauty (14-10-2026). «Las categorías no sincronizan». Es para **todas** las tiendas conectadas, no solo para ella.
 
 ---
@@ -33,7 +33,7 @@ Las de siempre: ley anti-vanidad (rojo, verde y muerde al mutar), arnés `tests/
 | E4 | `wp_set_object_terms` sin `append`: las categorías del TPV **sustituyen** a las de Woo, pero solo si el TPV trae alguna (`!empty`). Quitar todas en el TPV no se refleja | `class-product-sync.php:490`, `:2768` |
 | E5 | La API asigna categorías a un producto en POST y PATCH (`category_ids`; en PATCH sustituye), **no en el bulk**. Solo la plantilla de sector crea categorías, en la raíz, sin `category_path` y comparando el nombre con `=` (colación) | `ProductController.php:537`, `:1155`; `SectorTemplate.php:157` |
 | E6 | El TPV borra en cascada (`cat_del` → `category_son_del`) y avisa `on_category_deleted` de cada una. No borra las filas de `product_to_category` (quedan huérfanas; la API las oculta con el JOIN). El CSV del TPV **crea categorías sin disparar `on_category_created`** | `tpv/admin/classes/category.php:323-366`; `upload.php:1971`, `:1987` |
-| E7 | Los **ámbitos se congelan por cliente** al crearlo. El cliente de lulubeauty (`wc_8414e1062261`, 28-09) tiene `… customers:read categories:read`: ni `customers:write` ni `imports:write`, añadidos después a la lista por defecto. Un ámbito nuevo da 403 en toda tienda ya conectada | `AdminConnectorsController.php:141-157`; `api_clients.scopes` en prod |
+| E7 | Los **ámbitos se congelan por cliente** al crearlo, y **los escribe fijos el conector del TPV**, no la API: `products:read products:write stock:read stock:write orders:read orders:write returns:read returns:write webhooks:read webhooks:write customers:read categories:read`. Nunca han incluido `customers:write` ni `categories:write` (este ya existe en `Auth::SCOPES`, «reservado»). El cliente de lulubeauty (`wc_8414e1062261`, `channel='woocommerce'`) tiene exactamente esa lista. Un ámbito nuevo da 403 en toda tienda ya conectada | `plugin_wordpress_connector/wordpress_connector/config.php:207`; `plugin_prestashop_connector/prestashop_connector/config.php:207`; `Auth.php:56`; `api_clients.scopes` en prod |
 | E8 | `GET /categories` se cachea 300 s con etiqueta `category:*`, que solo invalida `EventLogger` (eventos `source=api`). Los eventos del TPV los escribe el bridge directo en `api_events` → una categoría creada en el TPV tarda hasta 5 min en salir en `GET /categories`. La clave de caché se construye con `['lang']` fijo, no con la query real | `CategoryController.php:24`, `:69`; `Cache.php`; `bridge.php:106` |
 | E9 | La resuscripción al webhook (`revisarSuscripcionWebhook`, `faltanEventos`) corre solo en `admin_init` (cuando alguien abre el admin de WP) y una vez por versión. `ajax_reset_sync` borra `_tpv_product_id` y nada más | `woocommerce-conector.php:417`; `class-admin.php:3498-3525` |
 | E10 | El TPV manda **siempre** la lista entera de campos (`CAMPOS_FICHA`) en `product.updated`: no se puede saber si cambiaron las categorías | `tpv/admin/classes/product.php:1864` |
@@ -41,7 +41,7 @@ Las de siempre: ley anti-vanidad (rojo, verde y muerde al mutar), arnés `tests/
 
 ## 3. Comportamiento objetivo — marcha normal
 
-Activo cuando la tienda tiene la marca `tpv_sync_categorias_unidas = 'arbol'` o `'completa'` (§4). **Sin marca, el plugin no toca categorías en ningún sitio**: ni crea términos, ni sustituye las de un producto (nada de «como hoy», que es E3 + E4). Los avisos `category.*` se aplican desde la marca `'arbol'`; la sustitución por producto (C3) desde `'completa'`.
+Activo cuando la tienda tiene la marca `tpv_sync_categorias_unidas = 'arbol'` o `'completa'` (§4). **Sin marca, el plugin no toca categorías en ningún sitio**: ni crea términos, ni sustituye las de un producto (nada de «como hoy», que es E3 + E4). Los avisos `category.*` se aplican desde la marca `'arbol'`; la sustitución por producto (C3) desde `'completa'`. Con `'arbol'`, un aviso de producto del TPV **junta** sus categorías con las de Woo, y un envío Woo → TPV solo lleva `category_ids` en las **altas** (en una actualización se omite y el TPV conserva las suyas).
 
 ### C1 — TPV → Woo: categorías
 
@@ -81,7 +81,7 @@ Una sola rutina, **solo aditiva**: no mueve, no renombra y no borra nada.
 Cuándo se ejecuta:
 
 - **Tiendas ya conectadas** (al actualizar el plugin): como primera fase de `autocurar()` (cron cada 5 min, candado y presupuesto de tiempo ya existentes), por tandas con cursor: primero el árbol, después los productos enlazados. Solo empieza si `/health` anuncia `categories_write` **y** el token tiene el ámbito (una llamada de prueba `GET /categories?todas=1` con 403 → se registra «falta el ámbito categories:write» en el panel y no se insiste hasta la siguiente vuelta).
-- **Tiendas nuevas** (asistente de sincronización inicial): el árbol se une como **primer paso**, antes de los productos, en los dos sentidos (`ajax_import` y `ajax_push_all`), con el `set_time_limit(600)` que ya tienen. Después, los volcados masivos (`import_all` y el bulk/batch de Woo → TPV) **juntan** las categorías de cada producto. La marca `'completa'` se guarda al terminar el asistente.
+- **Tiendas nuevas** (asistente de sincronización inicial): el árbol se une como **primer paso**, antes de los productos, en los dos sentidos (`ajax_import` y `ajax_push_all`), con el `set_time_limit(600)` que ya tienen. Después, los volcados masivos juntan: `import_all` junta en Woo, y el bulk/batch Woo → TPV manda `category_ids` solo en las altas. La marca `'completa'` no la pone el asistente: la pone el cron cuando termina de juntar los productos enlazados (paso 6), igual que en las tiendas ya conectadas. Un solo camino para acabar la unión.
 
 Regla para recordarla: **los volcados, la reconciliación y la unión juntan; los avisos sustituyen.**
 
@@ -92,7 +92,7 @@ Regla para recordarla: **los volcados, la reconciliación y la unión juntan; lo
 ### 5.1 Tabla y ámbito
 
 - `api_external_mapping_category` (`tpv_category_id`, `channel`, `client_id`, `external_id`, fechas; `UNIQUE (channel, client_id, external_id)`), calcada de `api_external_mapping_customer`. En `install.sql`, idempotente.
-- Ámbito `categories:write` (nuevo) en `Auth::SCOPES` y en la lista por defecto de `AdminConnectorsController`. **Migración** idempotente que añade `categories:write`, `customers:write` e `imports:write` a los clientes de canal (`woocommerce`, `prestashop`) que no los tengan: sin ella, toda tienda ya conectada recibe 403 (E7).
+- Ámbito `categories:write`: ya está en `Auth::SCOPES`. Se añade, con `customers:write`, a la lista fija de los dos conectores del TPV (`config.php:207` de `plugin_wordpress_connector` y de `plugin_prestashop_connector`) y a la lista por defecto de `AdminConnectorsController`. **Migración** idempotente en `install.sql` que añade `categories:write`, `customers:write` e `imports:write` a los clientes con `channel IN ('woocommerce','prestashop')` que no los tengan: sin ella, toda tienda ya conectada recibe 403 (E7).
 
 ### 5.2 Rutas
 
@@ -115,7 +115,7 @@ Regla para recordarla: **los volcados, la reconciliación y la unión juntan; lo
 ### 5.4 TPV (`tpv`), retoque mínimo
 
 - `upload.php` (importación CSV): disparar `on_category_created` al crear una categoría (`:1971`, `:1987`), con el mismo contexto que `category.php:284`. Sin esto, una categoría creada por CSV sin productos enlazados nunca llega a Woo (E6).
-- El bridge del TPV, al registrar un evento `category.*`, **invalida la caché** `category:*` de la API (como hace `CategoryController::invalidateCache`), para que `GET /categories` no sirva un árbol viejo (E8).
+- El bridge (`plugin_wordpress_connector/wordpress_connector/bridge.php`, y el de PrestaShop si comparte el patrón), al registrar un evento `category.*`, **borra de `api_cache` las entradas con etiqueta `category:*`** (capa BD; la copia APCu de la API caduca sola en ≤60 s), para que `GET /categories` no sirva un árbol viejo (E8).
 
 ## 6. Tests
 
@@ -136,7 +136,7 @@ Regla para recordarla: **los volcados, la reconciliación y la unión juntan; lo
 
 ## 7. Despliegue y lulubeauty
 
-Orden: **migración de ámbitos → API → TPV → release del plugin.** Sin la API, el plugin espera (§4).
+Orden: **API (con la migración de ámbitos en `install.sql`) → conectores del TPV y TPV → release del plugin.** Sin la API, el plugin espera (§4).
 
 lulubeauty está en la **2.9.0**: no tiene la actualización forzada (entró en la 2.10.0), así que necesita **una actualización manual**. La release arrastra además lo que hay en `main` sin publicar (PVP fase 2, auditoría del 07-10, productos a peso).
 
@@ -149,7 +149,7 @@ Lo esperado tras actualizar (datos del 14-10): 58 categorías emparejadas (COSME
 - **D3 (14-10):** nada de botones, simulaciones ni ganadores: la unión es automática y solo aditiva, porque es para toda la flota.
 - **D4 (14-10, auditoría):** una sola normalización de nombre, con acentos plegados.
 - **D5 (14-10, auditoría):** el enlace vive en la API (`api_external_mapping_category`); el termmeta es caché.
-- **D6 (14-10, auditoría):** se toca el TPV lo mínimo: el CSV avisa de las categorías que crea y el bridge invalida la caché.
+- **D6 (14-10, auditoría):** se toca el TPV lo mínimo: el CSV avisa de las categorías que crea; el bridge del conector invalida la caché.
 - **D7 (14-10, auditoría):** migración que añade los ámbitos que faltan a los clientes de canal existentes.
 
 Fuera de esta spec: el conector de PrestaShop (usará las mismas rutas y la misma tabla), imágenes y descripciones de categoría, multi-idioma y una cola para el push de producto.
