@@ -143,6 +143,12 @@ class TPV_Sync
         // y vía REST). Save_post genérico no vale — dispara con cualquier cambio
         // de meta y crea bucles.
         if (tpv_sync_module_catalog()) {
+            // Categorías Woo → TPV (SPEC_categorias_woo_tpv.md C2). pre_delete_term
+            // y no delete_product_cat: cuando este se dispara, el termmeta con el
+            // enlace ya no existe.
+            add_action('created_product_cat', [$this->products->categorias, 'alGuardarTermino'], 10, 1);
+            add_action('edited_product_cat',  [$this->products->categorias, 'alGuardarTermino'], 10, 1);
+            add_action('pre_delete_term',     [$this->products->categorias, 'antesDeBorrarTermino'], 10, 2);
             add_action('woocommerce_new_product',      [$this->products, 'push_wc_product_to_tpv'], 10, 1);
             add_action('woocommerce_update_product',   [$this->products, 'push_wc_product_to_tpv'], 10, 1);
             // Trash/untrash → status=0/1 en TPV (oculto/visible)
@@ -244,6 +250,21 @@ add_action('tpv_sync_autocurar', function () {
     if (!class_exists('TPV_Sync')) return;
     TPV_Sync::instance()->products->autocurar();
 });
+
+// Unión inicial de categorías (SPEC_categorias_woo_tpv.md §4), en el mismo cron
+// pero aparte de autocurar(): una tanda por vuelta hasta 'completa'. Sin la
+// capacidad en /health o sin el permiso categories:write, espera y lo dice en
+// el panel. Una vez completa no hace ni una llamada.
+add_action('tpv_sync_autocurar', function () {
+    if (!class_exists('TPV_Sync') || !tpv_sync_module_catalog()) return;
+    $sync = TPV_Sync::instance();
+    if (!$sync->api->isConfigured()) return;
+    try {
+        $sync->products->categorias->pasoDeUnion();
+    } catch (\Throwable $e) {
+        error_log('[tpv-sync] unión de categorías: ' . $e->getMessage());
+    }
+}, 8);
 
 // ─── Cron de pedidos retenidos: reintento cada 5 min ─────────────────────────
 //
@@ -410,6 +431,11 @@ add_action('plugins_loaded', function () {
     TPV_Sync::instance();
     $tpvAdmin = new TPV_Sync_Admin();
     $tpvAdmin->init();
+
+    // La revisión de la suscripción también desde el cron (antes que autocurar):
+    // una tienda ya conectada se suscribe a los eventos nuevos (category.*) sin
+    // esperar a que alguien abra el admin de WordPress.
+    add_action('tpv_sync_autocurar', [$tpvAdmin, 'revisarSuscripcionWebhook'], 5);
 
     // Tras actualizar el plugin, comprobar que el webhook del TPV incluye los
     // eventos de ESTA versión. Una tienda ya conectada se quedó con la lista

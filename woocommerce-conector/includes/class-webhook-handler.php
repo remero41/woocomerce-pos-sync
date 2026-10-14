@@ -589,13 +589,12 @@ class TPV_Sync_Webhook
                     break;
 
                 // ── Categorías ─────────────────────────────────────────────
+                // Por número, con sus madres (SPEC_categorias_woo_tpv.md C1).
+                // Antes de la unión inicial no hacen nada: la unión lo recoge.
                 case 'category.created':
                 case 'category.updated':
-                    $this->products->sync_category_from_tpv($resourceId, $fields);
-                    break;
-
                 case 'category.deleted':
-                    $this->products->delete_wc_category_by_tpv_id($resourceId);
+                    $this->products->categorias->aplicarAviso($eventType, $resourceId);
                     break;
 
                 default:

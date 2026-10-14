@@ -236,6 +236,9 @@ final class TPV_Sync_Categorias_Sync
     /** Une los dos árboles (solo añade) y pone la marca 'arbol'. false si no se pudo. */
     public function unirArbol(): bool
     {
+        // Lo llama también el asistente: con una API que aún no sabe escribir
+        // categorías no se toca nada (leería el árbol viejo y no podría crear).
+        if (!$this->api->tieneCapacidad('categories_write')) return false;
         $r = $this->api->get('/categories', ['todas' => 1]);
         if ((int) ($r['_status'] ?? 0) === 403) {
             $this->avisar(__('La conexión con el TPV no tiene el permiso categories:write: las categorías no se sincronizan hasta que se actualice la API del TPV.', 'tpv-sync'));

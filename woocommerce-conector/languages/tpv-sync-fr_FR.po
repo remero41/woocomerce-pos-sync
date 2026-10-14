@@ -327,3 +327,15 @@ msgstr "Vous n'avez pas la permission d'accéder à cette page."
 
 msgid "Zona peligrosa"
 msgstr "Zone dangereuse"
+
+msgid "Categoría del TPV «%s» sin pareja en la tienda: ya hay otra igual al mismo nivel (%s)."
+msgstr "Catégorie du TPV « %s » sans équivalent dans la boutique : il en existe déjà une identique au même niveau (%s)."
+
+msgid "La categoría «%s» no se pudo cambiar en el TPV: ya hay otra igual al mismo nivel."
+msgstr "La catégorie « %s » n'a pas pu être modifiée dans le TPV : il en existe déjà une identique au même niveau."
+
+msgid "La conexión con el TPV no tiene el permiso categories:write: las categorías no se sincronizan hasta que se actualice la API del TPV."
+msgstr "La connexion au TPV n'a pas l'autorisation categories:write : les catégories ne seront pas synchronisées tant que l'API du TPV n'est pas mise à jour."
+
+msgid "Categorías sin pareja o sin permiso"
+msgstr "Catégories sans équivalent ou sans autorisation"

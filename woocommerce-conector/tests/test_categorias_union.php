@@ -74,6 +74,15 @@ function run_categorias_union_tests(WooTestRunner $t): void
         $t->assert(str_contains($avisos, 'categories:write'), 'el panel dice qué permiso falta');
     });
 
+    $t->test('unirArbol sin la capacidad (API vieja): no toca nada ni marca', function ($t) use ($montar) {
+        [$api, $m, $s] = $montar();
+        $api->caps = [];
+        $api->c = [1 => ['parent_id' => 0, 'name' => 'Ropa', 'status' => 1, 'external_id' => null]];
+        $t->assertEquals(false, $s->unirArbol());
+        $t->assertEquals(['', [], []], [TPV_Sync_Categorias_Sync::fase(), $m->t, $api->llamadas],
+            'el asistente también la llama: con una API vieja no puede crear nada');
+    });
+
     $t->test('pasoDeUnion completo en una tienda pequeña: árbol y productos en una vuelta', function ($t) use ($montar) {
         [$api, $m, $s] = $montar([['post_id' => 10, 'tpv_id' => 500]]);
         $api->productos = [500 => []];
