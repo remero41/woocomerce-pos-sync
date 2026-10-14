@@ -121,6 +121,14 @@ class TPV_Sync
         // comportamiento estricto pedido.
         add_action('woocommerce_payment_complete',         [$this->orders, 'send_to_tpv']);
         add_action('woocommerce_order_status_processing',  [$this->orders, 'send_to_tpv']);
+        // Transferencia (y cualquier pasarela que deje el pedido on-hold): WC no
+        // llama a payment_complete() cuando el tendero lo marca «completado» a
+        // mano, y si no lo marca «procesando» la venta no existía en el TPV
+        // (reproducido en WC 10.6.2, 14-10-2026). send_to_tpv desduplica por
+        // meta, y como este hook va ANTES que order_status_changed, el cambio
+        // de estado llega después de crear el pedido. on-hold NO se engancha:
+        // es «esperando el pago».
+        add_action('woocommerce_order_status_completed',   [$this->orders, 'send_to_tpv']);
         add_action('woocommerce_order_status_changed',     [$this->orders, 'on_wc_status_changed'], 10, 3);
 
         // Refund creado en WC → POST /orders/{tpv_order_id}/returns
