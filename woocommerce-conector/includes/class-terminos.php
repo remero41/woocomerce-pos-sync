@@ -26,7 +26,7 @@ class TPV_Sync_Terminos
             $out[] = [
                 'term_id' => (int) $t->term_id,
                 'parent'  => (int) $t->parent,
-                'name'    => (string) $t->name,
+                'name'    => self::nombreLegible((string) $t->name),
                 'tpv_id'  => (int) get_term_meta((int) $t->term_id, self::META, true),
             ];
         }
@@ -49,13 +49,22 @@ class TPV_Sync_Terminos
     public function nombreDe(int $termId): string
     {
         $t = get_term($termId, self::TAX);
-        return $t && !is_wp_error($t) ? (string) $t->name : '';
+        return $t && !is_wp_error($t) ? self::nombreLegible((string) $t->name) : '';
     }
 
     public function padreDe(int $termId): int
     {
         $t = get_term($termId, self::TAX);
         return $t && !is_wp_error($t) ? (int) $t->parent : 0;
+    }
+
+    /**
+     * WordPress guarda el nombre escapado (pre_term_name → _wp_specialchars):
+     * «Hogar & Cocina» queda «Hogar &amp; Cocina». Al TPV va el legible.
+     */
+    private static function nombreLegible(string $s): string
+    {
+        return html_entity_decode($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
     }
 
     public function enlazar(int $termId, int $tpvId): void

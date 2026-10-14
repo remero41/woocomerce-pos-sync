@@ -93,6 +93,21 @@ function run_categorias_union_tests(WooTestRunner $t): void
         $t->assertEquals($n, count($api->llamadas), 'completa: no vuelve a hacer nada');
     });
 
+    $t->test('repetir la unión (p. ej. tras un corte por tiempo) no reenvía las parejas ya enlazadas', function ($t) use ($montar) {
+        [$api, $m, $s] = $montar();
+        $api->c = [1 => ['parent_id' => 0, 'name' => 'Ropa', 'status' => 1, 'external_id' => null],
+                   2 => ['parent_id' => 0, 'name' => 'Bebé', 'status' => 1, 'external_id' => null]];
+        $m->crear('ROPA', 0);
+        $m->crear('Uñas', 0);
+        $s->unirArbol();
+        unset($GLOBALS['__wp_options'][TPV_Sync_Categorias_Sync::MARCA]);
+        $api->llamadas = [];
+        $s->unirArbol();
+        $escrituras = array_values(array_filter($api->llamadas, fn ($l) => !str_starts_with($l, 'GET')));
+        $t->assertEquals([], $escrituras, 'todo estaba ya enlazado en los dos lados: ni POST ni PATCH');
+        $t->assertEquals([3, 3], [count($m->t), count($api->c)], 'y nada duplicado');
+    });
+
     $t->test('olvidar: borra termmeta, marca y cursor', function ($t) use ($montar) {
         [$api, $m, $s] = $montar();
         $a = $m->crear('A', 0);

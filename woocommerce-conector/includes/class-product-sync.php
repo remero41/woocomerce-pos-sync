@@ -1778,6 +1778,13 @@ class TPV_Sync_Product_Sync
                 // al TPV a medias. Todo lo vendible existe en el TPV.
                 return $this->asegurarEnTpv($postId) > 0;
             }
+            // Las categorías ignoran «quién manda» (SPEC_categorias_woo_tpv.md
+            // D1): las de la web llegan al TPV antes de releer el producto; si
+            // no, la relectura las borraría. En 'arbol' no se sustituye nada.
+            $cats = $this->categorias->paraPayload($postId, false);
+            if ($cats) {
+                $this->api->patch("/products/$tpvId", $cats);
+            }
             // Producto sincronizado: revertimos al estado del TPV.
             $GLOBALS['tpv_sync_skip_wc_product_push'] = true;
             try {

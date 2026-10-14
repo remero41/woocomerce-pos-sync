@@ -239,6 +239,9 @@ final class TPV_Sync_Categorias_Sync
         // Lo llama también el asistente: con una API que aún no sabe escribir
         // categorías no se toca nada (leería el árbol viejo y no podría crear).
         if (!$this->api->tieneCapacidad('categories_write')) return false;
+        // Una tienda grande hace aquí más de un centenar de llamadas. Si aun así
+        // PHP la corta, la vuelta siguiente es barata: lo ya enlazado no se reenvía.
+        @set_time_limit(300);
         $r = $this->api->get('/categories', ['todas' => 1]);
         if ((int) ($r['_status'] ?? 0) === 403) {
             $this->avisar(__('La conexión con el TPV no tiene el permiso categories:write: las categorías no se sincronizan hasta que se actualice la API del TPV.', 'tpv-sync'));
@@ -247,11 +250,15 @@ final class TPV_Sync_Categorias_Sync
         if (!TPV_Sync_API_Client::fueBien($r)) return false;
         $tpv  = array_values((array) ($r['data'] ?? []));
         $plan = TPV_Sync_Categorias::planUnion($tpv, $this->terminos->todos(), $this->terminos->porDefecto());
-        foreach ($plan['parejas'] as $par) {
-            $this->terminos->enlazar($par['term'], $par['tpv']);
-            $this->api->patch('/categories/' . $par['tpv'], ['client_external_id' => (string) $par['term']]);
-        }
         $porId = array_column($tpv, null, 'category_id');
+        foreach ($plan['parejas'] as $par) {
+            if ($this->terminos->tpvIdDe($par['term']) !== $par['tpv']) {
+                $this->terminos->enlazar($par['term'], $par['tpv']);
+            }
+            if ((string) ($porId[$par['tpv']]['external_id'] ?? '') !== (string) $par['term']) {
+                $this->api->patch('/categories/' . $par['tpv'], ['client_external_id' => (string) $par['term']]);
+            }
+        }
         foreach ($plan['crearEnWoo'] as $tid) {
             if (isset($porId[$tid])) {
                 $this->escribirEnWoo($porId[$tid], 0);

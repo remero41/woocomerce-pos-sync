@@ -209,5 +209,7 @@ require_once __DIR__ . '/test_categorias_union.php';
 run_categorias_union_tests($t);
 require_once __DIR__ . '/test_categorias_cableado.php';
 run_categorias_cableado_tests($t);
+require_once __DIR__ . '/test_terminos_wp.php';
+run_terminos_wp_tests($t);
 
 exit($t->summary());

@@ -98,6 +98,27 @@ function run_categorias_woo_a_tpv_tests(WooTestRunner $t): void
         $t->assertEquals(1, count((array) $GLOBALS['__wp_options'][TPV_Sync_Categorias_Sync::AVISOS]));
     });
 
+    $t->test('manda el TPV: cambiar las categorías de un producto en la web llega al TPV antes de releerlo', function ($t) use ($nuevo) {
+        // Las categorías ignoran «quién manda» (spec D1): sin esto, el plugin
+        // relee el producto del TPV y la web pierde las categorías que se le
+        // acaban de poner.
+        require_once dirname(__DIR__) . '/includes/class-product-sync.php';
+        [$api, $m, $s] = $nuevo();
+        $GLOBALS['__wp_options']['tpv_sync_principal'] = 'tpv';
+        $GLOBALS['__wp_meta'][8308]['_tpv_product_id'] = 501;
+        $a = $m->crear('Uñas', 0);
+        $m->ponerAProducto(8308, [$a]);
+        $sync = new TPV_Sync_Product_Sync($api);
+        $sync->categorias = $s;
+        $sync->push_wc_product_to_tpv(8308);
+        $t->assertEquals([$m->tpvIdDe($a)], $api->productos[501] ?? null, 'PATCH /products/501 con sus category_ids');
+        $GLOBALS['__wp_options'][TPV_Sync_Categorias_Sync::MARCA] = 'arbol';
+        unset($api->productos[501]);
+        $sync->push_wc_product_to_tpv(8308);
+        $t->assertEquals(false, isset($api->productos[501]), 'en arbol una actualización no sustituye las del TPV');
+        unset($GLOBALS['__wp_options']['tpv_sync_principal'], $GLOBALS['__wp_meta'][8308]['_tpv_product_id']);
+    });
+
     $t->test('payload de producto según la fase', function ($t) use ($nuevo) {
         [$api, $m, $s] = $nuevo();
         $a = $m->crear('A', 0);
