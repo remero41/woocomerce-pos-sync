@@ -1,5 +1,33 @@
 ## Sin publicar
 
+### Las categorías se sincronizan en los dos sentidos
+
+- **Las categorías del TPV llegan a la web, y las de la web al TPV.** Crear,
+  renombrar, mover o borrar una categoría en un lado se copia al otro, con su
+  categoría madre. Antes la tienda ni siquiera recibía los avisos de
+  categorías del TPV, y desde la web no viajaba ninguna.
+
+- **Las categorías de cada producto también viajan.** Cambiarlas en un lado
+  las cambia en el otro. Al crear un producto, o en los volcados del
+  asistente, se juntan las de los dos lados sin quitar ninguna.
+
+- **Se unen solas al actualizar.** La primera vez, el conector junta los dos
+  árboles: empareja las categorías con el mismo nombre (sin distinguir
+  mayúsculas ni acentos), crea en cada lado las que faltan y junta las
+  categorías de los productos enlazados. No mueve ni borra nada. Las que el
+  conector antiguo había creado sueltas en la raíz de la web se quedan donde
+  están hasta que se muevan una vez.
+
+- **Borrar una categoría la borra en los dos lados**, también si tiene
+  productos dentro.
+
+- **El panel avisa** de las categorías que no se pueden emparejar (ya hay
+  otra igual al mismo nivel) y de si la conexión no tiene permiso para
+  escribir categorías.
+
+- Necesita la API del TPV actualizada; con una anterior, las categorías se
+  quedan como estaban y el resto funciona igual.
+
 ### La tienda cobra solo lo mismo que la web
 
 - **Los precios de la tienda se corrigen solos.** Cada 6 horas el conector
