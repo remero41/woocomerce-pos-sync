@@ -678,6 +678,31 @@ class TPV_Sync_Product_Sync
 
     // ─── Reconciliación periódica ─────────────────────────────────────────────
 
+    /** @var callable|null fuente de las unidades en vuelo (tests); null = los pedidos de Woo */
+    private $fuenteEnVuelo = null;
+
+    /** Sustituye de dónde salen las unidades en vuelo (post_id => uds). */
+    public function conStockEnVuelo(callable $fuente): self
+    {
+        $this->fuenteEnVuelo = $fuente;
+        return $this;
+    }
+
+    /** @return array<int, float> post_id => unidades vendidas en la web que el TPV aún no tiene */
+    private function stockEnVuelo(): array
+    {
+        try {
+            return $this->fuenteEnVuelo !== null
+                ? (array) ($this->fuenteEnVuelo)()
+                : TPV_Sync_En_Vuelo::desdeWoo();
+        } catch (\Throwable $e) {
+            // Sin saber qué hay en vuelo, escribir el número del TPV podría
+            // devolver unidades ya vendidas: mejor no tocar nada esta vez.
+            $this->log('reconcile_error', 0, 'en vuelo ilegible, repaso aplazado: ' . $e->getMessage());
+            throw $e;
+        }
+    }
+
     /**
      * Compara stock TPV vs WC para un lote de productos y corrige los que
      * discrepan, usando el TPV como fuente autoritativa. Pensado para cron.
@@ -715,6 +740,10 @@ class TPV_Sync_Product_Sync
                 . $politica['stock'] . ')');
             return $stats;
         }
+
+        // Lo vendido en la web que el TPV aún no tiene: se descuenta de su
+        // número, o el repaso devolvería esas unidades (ver TPV_Sync_En_Vuelo).
+        $enVuelo = $this->stockEnVuelo();
 
         $params = ['status' => 1];
         if ($limit > 0) $params['per_page'] = min($limit, 100);
@@ -785,11 +814,12 @@ class TPV_Sync_Product_Sync
                             ));
                             if (!$varId) continue;
                             $wcQty = (float)get_post_meta($varId, '_stock', true);
-                            if (abs($wcQty - $qty) > 0.0001) {
-                                $this->update_variant_stock($povId, $qty);
+                            $debe  = $qty - ($enVuelo[$varId] ?? 0.0);
+                            if (abs($wcQty - $debe) > 0.0001) {
+                                $this->update_variant_stock($povId, $debe);
                                 $stats['variant_fixed']++;
                                 $this->log('reconcile_fix', $povId,
-                                    "variant pov={$povId} WC={$wcQty} → TPV={$qty}");
+                                    "variant pov={$povId} WC={$wcQty} → TPV={$qty} − en vuelo = {$debe}");
                             }
                         }
                     }
@@ -802,11 +832,12 @@ class TPV_Sync_Product_Sync
                         continue;
                     }
                     $wcQty = (float)get_post_meta($postId, '_stock', true);
-                    if (abs($wcQty - $tpvQty) > 0.0001) {
-                        $this->update_stock($tpvId, $tpvQty);
+                    $debe  = $tpvQty - ($enVuelo[$postId] ?? 0.0);
+                    if (abs($wcQty - $debe) > 0.0001) {
+                        $this->update_stock($tpvId, $debe);
                         $stats['fixed']++;
                         $this->log('reconcile_fix', $tpvId,
-                            "product tpv_id={$tpvId} WC={$wcQty} → TPV={$tpvQty}");
+                            "product tpv_id={$tpvId} WC={$wcQty} → TPV={$tpvQty} − en vuelo = {$debe}");
                     }
                 }
             } catch (Throwable $e) {
@@ -3166,6 +3197,11 @@ class TPV_Sync_Product_Sync
         );
         $stats['politica'] = $politica;
 
+        // Lo vendido en la web que el TPV aún no tiene (TPV_Sync_En_Vuelo): para
+        // comparar, el stock de Woo se expresa como lo verá el TPV cuando le
+        // lleguen esos pedidos (Woo + en vuelo); al bajarlo, TPV − en vuelo.
+        $enVuelo = $this->stockEnVuelo();
+
         try {
             $tpvList = $this->api->getAll('/products', ['per_page' => 200]);
         } catch (Throwable $e) {
@@ -3251,7 +3287,7 @@ class TPV_Sync_Product_Sync
                 'name'        => get_the_title($postId),
                 'price'       => $wcProduct ? (float) ($wcProduct->get_regular_price() ?: 0) : 0.0,
                 'sku'         => $wcProduct ? (string) $wcProduct->get_sku() : '',
-                'quantity'    => (float) get_post_meta($postId, '_stock', true),
+                'quantity'    => (float) get_post_meta($postId, '_stock', true) + ($enVuelo[$postId] ?? 0.0),
             ];
             $fotoTpv = [
                 'tpv_id'      => $tpvId,
@@ -3293,7 +3329,7 @@ class TPV_Sync_Product_Sync
             if ($dryRun) continue;
 
             if ($decision['stock']['accion'] === 'pull') {
-                $this->update_stock($tpvId, (int) $fotoTpv['quantity']);
+                $this->update_stock($tpvId, (int) $fotoTpv['quantity'] - ($enVuelo[$postId] ?? 0.0));
                 $stats['fixed']++;
             } elseif ($decision['stock']['accion'] === 'push') {
                 // push_wc_stock_change() es el handler del hook de WC y espera
