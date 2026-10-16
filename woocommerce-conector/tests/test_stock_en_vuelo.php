@@ -104,6 +104,23 @@ function run_stock_en_vuelo_tests(WooTestRunner $t): void
         $t->assertEquals([], $u);
     });
 
+    $t->test('la consulta a Woo usa el atajo meta_key/meta_compare, no meta_query', function ($t) {
+        // Sin HPOS, wc_get_orders tira un meta_query propio (WC_Data_Store_WP::
+        // get_wp_query_args, comprobado en WC 10.6.2): el «primer pedido enviado»
+        // sería el más antiguo de la tienda y contarían los de antes de conectar.
+        $src = (string) file_get_contents(dirname(__DIR__) . '/includes/class-en-vuelo.php');
+        $t->assert(!str_contains($src, "'meta_query'"), 'meta_query no llega a WP_Query con pedidos en entradas');
+        $t->assertEquals(2, substr_count($src, "'meta_key'     => TPV_Sync_Order_Sync::TPV_ORDER_META"));
+        $t->assert(str_contains($src, "'meta_compare' => 'NOT EXISTS'") && str_contains($src, "'meta_compare' => 'EXISTS'"),
+            'sin enviar para los candidatos; enviado para el primero');
+    });
+
+    $t->test('la consulta pide solo pedidos, no reembolsos', function ($t) {
+        // wc_get_orders sin `type` devuelve también los OrderRefund (WC 10.6.2, tpv85).
+        $src = (string) file_get_contents(dirname(__DIR__) . '/includes/class-en-vuelo.php');
+        $t->assertEquals(2, substr_count($src, "'type'         => 'shop_order'"));
+    });
+
     // ── El repaso escribe TPV − en vuelo ──────────────────────────────────
     $t->test('el repaso deja en Woo el stock del TPV menos lo vendido en la web', function ($t) {
         volcado_tienda();

@@ -63,9 +63,14 @@ class TPV_Sync_En_Vuelo
             return [];
         }
         $pedidos = wc_get_orders([
+            'type'         => 'shop_order',   // sin esto vienen también los reembolsos
             'status'       => self::ESTADOS,
             'date_created' => '>' . (time() - self::DIAS * DAY_IN_SECONDS),
-            'meta_query'   => [['key' => TPV_Sync_Order_Sync::TPV_ORDER_META, 'compare' => 'NOT EXISTS']],
+            // meta_key/meta_compare y NO meta_query: con los pedidos en entradas
+            // (sin HPOS) wc_get_orders descarta un meta_query propio y devolvería
+            // todos. Los dos almacenes aceptan el atajo.
+            'meta_key'     => TPV_Sync_Order_Sync::TPV_ORDER_META,
+            'meta_compare' => 'NOT EXISTS',
             'limit'        => -1,
         ]);
         return self::dePedidos((array) $pedidos, self::primerEnviado());
@@ -79,7 +84,9 @@ class TPV_Sync_En_Vuelo
             return $guardado;
         }
         $ids = wc_get_orders([
-            'meta_query' => [['key' => TPV_Sync_Order_Sync::TPV_ORDER_META, 'compare' => 'EXISTS']],
+            'type'         => 'shop_order',
+            'meta_key'     => TPV_Sync_Order_Sync::TPV_ORDER_META,
+            'meta_compare' => 'EXISTS',
             'orderby'    => 'ID',
             'order'      => 'ASC',
             'limit'      => 1,
