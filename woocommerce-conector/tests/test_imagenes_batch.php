@@ -838,30 +838,27 @@ function run_reconciliacion_tests(WooTestRunner $t): void
             'sin cursor siempre revisa los mismos primeros N: el resto del catálogo nunca se mira');
     });
 
-    $t->test('el cron guarda el punto y sigue desde ahí', function ($t) {
+    // 2.13.0: ya no son 100 a la semana con un cursor guardado. El cron de
+    // cada noche arranca el repaso por páginas desde el principio y cada
+    // página programa la siguiente: el catálogo entero en una noche.
+    $t->test('el cron de cada noche arranca el repaso desde el principio', function ($t) {
         $src = (string) file_get_contents(dirname(__DIR__) . '/woocommerce-conector.php');
-        preg_match('/add_action\(\x27tpv_sync_reconcile\x27.*?\}\);/s', $src, $m);
-        $cron = $m[0] ?? '';
-        $t->assert(str_contains($cron, 'tpv_sync_reconcile_cursor'),
-            'sin guardar el cursor, cada semana vuelve a empezar por el principio');
-        // Y que se LEA para continuar: guardarlo sin usarlo no sirve de nada.
-        $t->assert((bool) preg_match('/get_option\(\s*\x27tpv_sync_reconcile_cursor\x27/', $cron),
-            'el cursor guardado tiene que leerse al arrancar la pasada');
-        $t->assert((bool) preg_match('/reconcile\(\s*\d+\s*,\s*\$cursor/', $cron),
-            'y pasarse a reconcile(): si no, se revisan siempre los primeros 100');
+        preg_match('/add_action\(\x27tpv_sync_reconcile\x27.*?;\s*\}\);/s', $src, $m);
+        $t->assert(str_contains($m[0] ?? '', "tpv_sync_repaso_stock_pagina('')"),
+            'desde el primer producto, no desde donde se quedó la semana pasada');
     });
 
-    $t->test('al llegar al final vuelve a empezar', function ($t) {
+    $t->test('y cada página encadena la siguiente hasta el final', function ($t) {
         $src = (string) file_get_contents(dirname(__DIR__) . '/woocommerce-conector.php');
-        preg_match('/add_action\(\x27tpv_sync_reconcile\x27.*?\}\);/s', $src, $m);
-        $cron = $m[0] ?? '';
-        $t->assert(str_contains($cron, 'delete_option'),
-            'al agotar el catálogo hay que reiniciar el recorrido, no quedarse parado');
+        preg_match('/function tpv_sync_repaso_stock_pagina.*?\n\}/s', $src, $m);
+        $t->assert((bool) preg_match('/reconcile\(\s*100\s*,\s*\$cursor/', $m[0] ?? ''), 'página de 100 desde su cursor');
+        $t->assert(str_contains($m[0] ?? '', "wp_schedule_single_event(time() + 10, 'tpv_sync_reconcile_stock_total'"),
+            'sin encadenar, solo se repasarían los primeros 100');
     });
 
     // La aritmética del caso real, para que el número no se pierda.
-    $t->test('2499 productos a 100 por semana = 25 pasadas', function ($t) {
-        $semanas = (int) ceil(2499 / 100);
-        $t->assert($semanas === 25, "el catálogo entero se cubre en $semanas semanas, no nunca");
+    $t->test('2499 productos a 100 por página = 25 páginas en una noche', function ($t) {
+        $paginas = (int) ceil(2499 / 100);
+        $t->assert($paginas === 25 && $paginas * 10 < 3600, "el catálogo entero en $paginas páginas, minutos, no 25 semanas");
     });
 }

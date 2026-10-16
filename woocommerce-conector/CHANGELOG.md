@@ -1,3 +1,23 @@
+## 2.13.0
+
+### El stock se repasa solo, cada noche
+
+- **Cada noche, a las 04:00 (hora de la tienda), se repasa el stock de todo
+  el catálogo** con el del TPV. Antes eran 100 productos a la semana: con
+  2.500 productos, una diferencia tardaba hasta 25 semanas en corregirse.
+
+- **Al actualizar a esta versión se repasa una vez**, a los pocos minutos.
+  Corrige lo que se haya desajustado antes, por ejemplo las ventas de caja
+  que no restaban en la tienda (arreglado en el TPV en octubre de 2026).
+
+- **Lo vendido en la web que el TPV aún no tiene se respeta.** Una
+  transferencia en espera, o un pedido que todavía no ha llegado al TPV, ya
+  restó sus unidades en la tienda. El repaso (y el botón «Reconciliar») ya no
+  las devuelve, así que no se pueden vender dos veces.
+
+- El repaso sigue la regla de siempre: solo cuando el stock lo manda el TPV,
+  y solo en los productos que cuentan stock en los dos lados.
+
 ## 2.12.0
 
 ### Las categorías se sincronizan en los dos sentidos

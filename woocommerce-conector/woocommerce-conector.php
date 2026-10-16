@@ -4,7 +4,7 @@ declare(strict_types=1);
  * Plugin Name: Catinfog Conector
  * Plugin URI:  https://catinfog.com
  * Description: Conecta tu tienda WooCommerce con el TPV Catinfog. Sincroniza productos, stock, ventas y devoluciones en tiempo real.
- * Version:     2.12.0
+ * Version:     2.13.0
  * Author:      Catinfog
  * Text Domain: tpv-sync
  * Domain Path: /languages
@@ -12,7 +12,7 @@ declare(strict_types=1);
  */
 defined('ABSPATH') || exit;
 
-define('TPV_SYNC_VERSION', '2.12.0');
+define('TPV_SYNC_VERSION', '2.13.0');
 define('TPV_SYNC_DIR',     plugin_dir_path(__FILE__));
 define('TPV_SYNC_URL',     plugin_dir_url(__FILE__));
 
@@ -37,6 +37,7 @@ require_once TPV_SYNC_DIR . 'includes/class-stock.php';
 require_once TPV_SYNC_DIR . 'includes/class-precio-variantes.php';
 require_once TPV_SYNC_DIR . 'includes/class-precio-pvp.php';
 require_once TPV_SYNC_DIR . 'includes/class-reconciler.php';
+require_once TPV_SYNC_DIR . 'includes/class-en-vuelo.php';
 require_once TPV_SYNC_DIR . 'includes/class-categorias.php';
 require_once TPV_SYNC_DIR . 'includes/class-terminos.php';
 require_once TPV_SYNC_DIR . 'includes/class-categorias-sync.php';
@@ -65,6 +66,13 @@ require_once TPV_SYNC_DIR . 'includes/class-updater.php';
 if (get_option('tpv_sync_version_instalada') !== TPV_SYNC_VERSION) {
     update_option('tpv_sync_version_instalada', TPV_SYNC_VERSION, false);
     update_option('tpv_sync_flush_rewrite', 1, false);
+    // El repaso de stock pasó de semanal a cada noche (2.13.0): la tienda tiene
+    // guardado el semanal y wp_next_scheduled() no dejaría programar el nuevo.
+    wp_clear_scheduled_hook('tpv_sync_reconcile');
+    delete_option('tpv_sync_reconcile_cursor');
+    // Y un repaso ahora: lo que se desincronizó con la versión anterior (las
+    // ventas de caja no llegaban a la tienda) no espera a la noche.
+    wp_schedule_single_event(time() + 5 * MINUTE_IN_SECONDS, 'tpv_sync_reconcile_stock_total', ['']);
 }
 
 (new TPV_Sync_Updater(
@@ -223,29 +231,18 @@ class TPV_Sync
 
 // ─── Activación / desactivación ───────────────────────────────────────────────
 
-// ─── Cron de reconciliación semanal ──────────────────────────────────────────
+// ─── Cron de repaso de stock, cada noche ────────────────────────────────────
+//
+// La red de seguridad del stock: el catálogo ENTERO, por páginas (el mismo
+// repaso que tras un CSV en el TPV), con la política del comerciante y
+// descontando lo vendido en la web que el TPV aún no tiene.
+//
+// Antes eran 100 productos a la semana con cursor: un catálogo de 2.500
+// tardaba 25 semanas en dar la vuelta, y una venta de caja que no llegó a la
+// tienda (esenciaurbanamoda, octubre de 2026: ninguna llegaba) se quedaba sin
+// corregir meses.
 
-add_action('tpv_sync_reconcile', function () {
-    if (!class_exists('TPV_Sync')) return;
-
-    // Continuamos por donde se quedó la pasada anterior. Sin esto se revisaban
-    // SIEMPRE los primeros 100 productos: con un catálogo de 2.499 eso es el
-    // 4%, y siempre el mismo 4%. Un producto desincronizado más allá de esa
-    // primera página no se corregía nunca.
-    //
-    // Con cursor, en ~25 semanas se cubre el catálogo entero y se vuelve a
-    // empezar. La reconciliación es la red de seguridad del sistema: tiene que
-    // pasar por todas partes, aunque tarde.
-    $cursor = get_option('tpv_sync_reconcile_cursor', '') ?: null;
-    $stats  = TPV_Sync::instance()->products->reconcile(100, $cursor);
-
-    if (!empty($stats['next_cursor'])) {
-        update_option('tpv_sync_reconcile_cursor', (string) $stats['next_cursor'], false);
-    } else {
-        // Se llegó al final del catálogo: la próxima pasada empieza de nuevo.
-        delete_option('tpv_sync_reconcile_cursor');
-    }
-});
+add_action('tpv_sync_reconcile', static function () { tpv_sync_repaso_stock_pagina(''); });
 
 // ─── Cron de autocuración: enlaces e imágenes que faltan, cada 5 min ─────────
 //
@@ -315,7 +312,9 @@ add_filter('cron_schedules', function ($schedules) {
 
 add_action('plugins_loaded', function () {
     if (!wp_next_scheduled('tpv_sync_reconcile')) {
-        wp_schedule_event(time() + HOUR_IN_SECONDS, 'weekly', 'tpv_sync_reconcile');
+        // De madrugada, hora de la tienda: de día competiría con la web.
+        $zona = function_exists('wp_timezone') ? wp_timezone() : new DateTimeZone('UTC');
+        wp_schedule_event((new DateTimeImmutable('tomorrow 04:00', $zona))->getTimestamp(), 'daily', 'tpv_sync_reconcile');
     }
     if (!wp_next_scheduled('tpv_sync_queue_process')) {
         wp_schedule_event(time() + 60, 'every_minute', 'tpv_sync_queue_process');
@@ -465,7 +464,14 @@ add_action('plugins_loaded', function () {
 function tpv_sync_repaso_stock_pagina($cursor = ''): void
 {
     if (!class_exists('TPV_Sync') || !tpv_sync_module_catalog()) return;
-    $stats = TPV_Sync::instance()->products->reconcile(100, $cursor !== '' ? (string) $cursor : null);
+    try {
+        $stats = TPV_Sync::instance()->products->reconcile(100, $cursor !== '' ? (string) $cursor : null);
+    } catch (\Throwable $e) {
+        // Sin saber qué hay en vuelo no se escribe nada (reconcile lo deja en
+        // el registro): se corta la cadena y la próxima noche se vuelve a empezar.
+        error_log('[tpv-sync] repaso de stock: ' . $e->getMessage());
+        return;
+    }
     if (!empty($stats['next_cursor'])) {
         wp_schedule_single_event(time() + 10, 'tpv_sync_reconcile_stock_total', [(string) $stats['next_cursor']]);
     }

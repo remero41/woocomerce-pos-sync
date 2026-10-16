@@ -33,8 +33,10 @@ function register_activation_hook($f, $cb) {}
 function register_deactivation_hook($f, $cb) { $GLOBALS['__desactivar'] = $cb; }
 function register_uninstall_hook($f, $cb) {}
 function wp_next_scheduled($h) { return false; }
-function wp_schedule_event($t, $rec, $h) { $GLOBALS['__rec']['programados'][$h] = $rec; return true; }
+function wp_schedule_event($t, $rec, $h) { $GLOBALS['__rec']['programados'][$h] = $rec; $GLOBALS['__rec']['cuando'][$h] = $t; return true; }
+function wp_schedule_single_event($t, $h, $args = []) { $GLOBALS['__rec']['sueltos'][] = ['hook' => $h, 'args' => $args, 'en' => $t - time()]; return true; }
 function wp_clear_scheduled_hook($h) { $GLOBALS['__rec']['limpiados'][] = $h; return 0; }
+function wp_timezone() { return new DateTimeZone('Europe/Madrid'); }
 function is_admin() { return false; }
 function __($t, $d = null) { return $t; }
 function get_query_var($v) { return ''; }
@@ -42,6 +44,10 @@ function flush_rewrite_rules() {}
 
 
 require dirname(__DIR__, 2) . '/woocommerce-conector.php';
+
+// Lo que hizo el plugin al cargar con una versión guardada distinta (= recién actualizado).
+$alActualizar = ['limpiados' => $GLOBALS['__rec']['limpiados'], 'sueltos' => $GLOBALS['__rec']['sueltos'] ?? []];
+$GLOBALS['__rec']['limpiados'] = [];
 
 // Lo que WordPress hace después: plugins_loaded y el filtro de intervalos.
 foreach ($GLOBALS['__rec']['acciones']['plugins_loaded'] ?? [] as $cb) {
@@ -67,4 +73,9 @@ echo json_encode([
     'programados'=> $GLOBALS['__rec']['programados'],
     'intervalos' => array_keys($intervalos),
     'limpiados'  => $GLOBALS['__rec']['limpiados'],
+    'cuando'     => array_map(
+        static fn ($t) => (new DateTimeImmutable('@' . $t))->setTimezone(new DateTimeZone('Europe/Madrid'))->format('H:i'),
+        $GLOBALS['__rec']['cuando'] ?? []
+    ),
+    'al_actualizar' => $alActualizar,
 ]);
