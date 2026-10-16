@@ -44,6 +44,32 @@ function run_cron_cableado_tests(WooTestRunner $t): void
         $t->assertEquals(false, $r['auto_update']['ajeno'] ?? null, 'los plugins ajenos, como estaban');
     });
 
+    // ── Repaso de stock solo (16-10-2026) ────────────────────────────────
+    // Antes: 100 productos a la semana con cursor (2.500 productos = 25
+    // semanas por vuelta). Una venta que no llegó a la tienda tardaba meses en
+    // corregirse. Ahora el catálogo entero cada noche, por páginas.
+    $t->test('el repaso de stock es cada noche, no semanal', function ($t) use ($r) {
+        $t->assertEquals('daily', $r['programados']['tpv_sync_reconcile'] ?? null);
+    });
+
+    $t->test('y de madrugada, hora de la tienda (04:00)', function ($t) use ($r) {
+        $t->assertEquals('04:00', $r['cuando']['tpv_sync_reconcile'] ?? null,
+            'de día competiría con las ventas de la web');
+    });
+
+    $t->test('al actualizar se reprograma (las tiendas tienen guardado el semanal)', function ($t) use ($r) {
+        $t->assert(in_array('tpv_sync_reconcile', $r['al_actualizar']['limpiados'] ?? [], true),
+            'wp_next_scheduled ve el semanal viejo y no programaría el diario nunca');
+    });
+
+    $t->test('al actualizar se repasa el stock una vez, enseguida', function ($t) use ($r) {
+        $repaso = array_values(array_filter($r['al_actualizar']['sueltos'] ?? [],
+            static fn ($e) => $e['hook'] === 'tpv_sync_reconcile_stock_total'));
+        $t->assertEquals(1, count($repaso), 'un repaso, no ninguno ni varios');
+        $t->assertEquals([''], $repaso[0]['args'] ?? null, 'desde el principio del catálogo');
+        $t->assert(($repaso[0]['en'] ?? 9999) <= 600, 'en minutos, no al día siguiente');
+    });
+
     $t->test('todo evento programado tiene su add_action', function ($t) use ($r) {
         $huerfanos = array_diff(array_keys($r['programados']), $r['acciones']);
         $t->assertEquals([], array_values($huerfanos), 'programado y sin nadie que lo ejecute');
@@ -68,6 +94,15 @@ function run_repaso_stock_csv_tests(WooTestRunner $t): void
     $t->test('csv.imported programa el repaso de stock, no import_all()', function ($t) use ($wh) {
         $t->assert(str_contains($wh, "'tpv_sync_reconcile_stock_total', ['']"), 'programa el repaso desde el principio');
         $t->assert(!preg_match("/case 'csv\\.imported':[^}]*'tpv_sync_import_all'/s", $wh), 'el aviso no programa el volcado');
+    });
+    $t->test('el repaso nocturno recorre el catálogo entero (el mismo repaso por páginas)', function ($t) use ($src) {
+        $t->assert((bool) preg_match("/add_action\\('tpv_sync_reconcile',[^;]*tpv_sync_repaso_stock_pagina\\(''\\)/s", $src),
+            'el cron diario arranca el repaso desde el principio');
+        $t->assert(!str_contains($src, 'tpv_sync_reconcile_cursor\', \''), 'sin el cursor de 100 a la semana');
+    });
+    $t->test('un fallo del repaso corta la cadena sin romper el cron', function ($t) use ($src) {
+        $t->assert((bool) preg_match('/function tpv_sync_repaso_stock_pagina.*?try\s*\{.*?catch\s*\(\\\\?Throwable/s', $src),
+            'sin saber qué hay en vuelo no se escribe, pero WP-Cron no debe ver una excepción');
     });
     $t->test('cada página programa la siguiente con su cursor y nunca va sin límite', function ($t) use ($src) {
         $t->assert(str_contains($src, 'reconcile(100, $cursor'), 'páginas de 100');
