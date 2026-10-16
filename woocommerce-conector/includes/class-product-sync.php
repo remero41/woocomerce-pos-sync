@@ -431,7 +431,12 @@ class TPV_Sync_Product_Sync
         // Un producto nuevo se trata como gestionado si la API no dice nada
         // (comportamiento de siempre para una API anterior a `subtract`).
         $wooGestiona = $created || get_post_meta($postId, '_manage_stock', true) === 'yes';
-        foreach (TPV_Sync_Stock::haciaWoo($p, $wooGestiona) as $clave => $valor) {
+        // El número del TPV menos lo vendido en la web que aún no tiene.
+        $pStock = $p;
+        if (!empty($p['subtract']) || !array_key_exists('subtract', $p)) {
+            $pStock['quantity'] = $this->stockParaWoo($postId, (float) ($p['quantity'] ?? 0));
+        }
+        foreach (TPV_Sync_Stock::haciaWoo($pStock, $wooGestiona) as $clave => $valor) {
             update_post_meta($postId, $clave, $valor);
         }
         update_post_meta($postId, self::TPV_ID_META, $tpvId);
@@ -635,6 +640,7 @@ class TPV_Sync_Product_Sync
             if (!TPV_Sync_Stock::seCuenta(get_post_meta($postId, '_manage_stock', true) === 'yes', [])) {
                 return;
             }
+            $quantity = $this->stockParaWoo($postId, $quantity);
             update_post_meta($postId, '_stock', $quantity);
             update_post_meta($postId, '_stock_status', $quantity > 0 ? 'instock' : 'outofstock');
             wc_delete_product_transients($postId);
@@ -657,6 +663,7 @@ class TPV_Sync_Product_Sync
             $tpvOptionValueId
         ));
         if (!$varId) return;
+        $quantity = $this->stockParaWoo($varId, $quantity);
 
         $GLOBALS['tpv_sync_skip_wc_stock_push'] = true;
         try {
@@ -685,14 +692,32 @@ class TPV_Sync_Product_Sync
     public function conStockEnVuelo(callable $fuente): self
     {
         $this->fuenteEnVuelo = $fuente;
+        $this->enVuelo = null;
         return $this;
+    }
+
+    /** @var array<int, float>|null lo en vuelo de esta petición (una consulta, no una por aviso) */
+    private ?array $enVuelo = null;
+
+    /**
+     * El stock que se escribe en Woo a partir del número del TPV: menos lo
+     * vendido en la web que el TPV aún no tiene. Lo usan TODOS los caminos
+     * TPV → Woo (avisos de stock, producto, tallas, repaso): si uno escribiera
+     * el número tal cual, devolvería a la tienda unidades ya vendidas.
+     */
+    private function stockParaWoo(int $wcPostId, float $tpvQty): float
+    {
+        return $tpvQty - ($this->stockEnVuelo()[$wcPostId] ?? 0.0);
     }
 
     /** @return array<int, float> post_id => unidades vendidas en la web que el TPV aún no tiene */
     private function stockEnVuelo(): array
     {
+        if ($this->enVuelo !== null) {
+            return $this->enVuelo;
+        }
         try {
-            return $this->fuenteEnVuelo !== null
+            return $this->enVuelo = $this->fuenteEnVuelo !== null
                 ? (array) ($this->fuenteEnVuelo)()
                 : TPV_Sync_En_Vuelo::desdeWoo();
         } catch (\Throwable $e) {
@@ -741,9 +766,10 @@ class TPV_Sync_Product_Sync
             return $stats;
         }
 
-        // Lo vendido en la web que el TPV aún no tiene: se descuenta de su
-        // número, o el repaso devolvería esas unidades (ver TPV_Sync_En_Vuelo).
-        $enVuelo = $this->stockEnVuelo();
+        // Lo vendido en la web que el TPV aún no tiene se descuenta de su número
+        // (stockParaWoo): se consulta ANTES de escribir nada, y si no se puede
+        // saber, no se toca ningún producto (ver TPV_Sync_En_Vuelo).
+        $this->stockEnVuelo();
 
         $params = ['status' => 1];
         if ($limit > 0) $params['per_page'] = min($limit, 100);
@@ -814,9 +840,9 @@ class TPV_Sync_Product_Sync
                             ));
                             if (!$varId) continue;
                             $wcQty = (float)get_post_meta($varId, '_stock', true);
-                            $debe  = $qty - ($enVuelo[$varId] ?? 0.0);
+                            $debe  = $this->stockParaWoo($varId, $qty);
                             if (abs($wcQty - $debe) > 0.0001) {
-                                $this->update_variant_stock($povId, $debe);
+                                $this->update_variant_stock($povId, $qty);
                                 $stats['variant_fixed']++;
                                 $this->log('reconcile_fix', $povId,
                                     "variant pov={$povId} WC={$wcQty} → TPV={$qty} − en vuelo = {$debe}");
@@ -832,9 +858,9 @@ class TPV_Sync_Product_Sync
                         continue;
                     }
                     $wcQty = (float)get_post_meta($postId, '_stock', true);
-                    $debe  = $tpvQty - ($enVuelo[$postId] ?? 0.0);
+                    $debe  = $this->stockParaWoo($postId, $tpvQty);
                     if (abs($wcQty - $debe) > 0.0001) {
-                        $this->update_stock($tpvId, $debe);
+                        $this->update_stock($tpvId, $tpvQty);
                         $stats['fixed']++;
                         $this->log('reconcile_fix', $tpvId,
                             "product tpv_id={$tpvId} WC={$wcQty} → TPV={$tpvQty} − en vuelo = {$debe}");
@@ -3000,6 +3026,7 @@ class TPV_Sync_Product_Sync
                     update_post_meta($varId, 'attribute_' . $attrKey, $termSlug);
                 }
 
+                $quantity = $this->stockParaWoo($varId, (float) $quantity);
                 update_post_meta($varId, '_manage_stock',  'yes');
                 update_post_meta($varId, '_stock',         $quantity);
                 update_post_meta($varId, '_stock_status',  $quantity > 0 ? 'instock' : 'outofstock');
@@ -3329,7 +3356,7 @@ class TPV_Sync_Product_Sync
             if ($dryRun) continue;
 
             if ($decision['stock']['accion'] === 'pull') {
-                $this->update_stock($tpvId, (int) $fotoTpv['quantity'] - ($enVuelo[$postId] ?? 0.0));
+                $this->update_stock($tpvId, (int) $fotoTpv['quantity']);   // descuenta lo en vuelo
                 $stats['fixed']++;
             } elseif ($decision['stock']['accion'] === 'push') {
                 // push_wc_stock_change() es el handler del hook de WC y espera

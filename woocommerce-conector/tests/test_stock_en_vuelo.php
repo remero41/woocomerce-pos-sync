@@ -227,4 +227,87 @@ function run_stock_en_vuelo_tests(WooTestRunner $t): void
             'subir 4 dejaría el TPV en 2 cuando le lleguen los 2 pedidos');
         $GLOBALS['wpdb'] = $antes;
     });
+
+    // ── Cada aviso del TPV (no solo el repaso) ───────────────────────────
+    // stock.adjusted / variant.stock_adjusted / product.updated traen el stock
+    // ABSOLUTO del TPV. Escribirlo tal cual devolvía a la tienda lo vendido en
+    // la web que el TPV aún no tiene, en cuanto el TPV tocaba ese producto
+    // (una venta de caja, un ajuste). Mismo cálculo que el repaso.
+
+    $t->test('stock.adjusted: TPV − en vuelo', function ($t) {
+        volcado_tienda();
+        $GLOBALS['__wp_meta'][8310] += ['_tpv_product_id' => 502, '_manage_stock' => 'yes', '_stock' => 4];
+        $sync = (new TPV_Sync_Product_Sync(new ApiVolcadoFalsa()))->conStockEnVuelo(fn () => [8310 => 2.0]);
+        $sync->update_stock(502, 5.0);   // venta de caja: el TPV pasa de 6 a 5
+        $t->assertEquals(3.0, (float) stock_meta(8310, '_stock'), '5 en el TPV − 2 vendidas en la web');
+        $t->assertEquals('instock', stock_meta(8310, '_stock_status'));
+    });
+
+    $t->test('stock.adjusted: si lo que queda está todo vendido en la web, agotado', function ($t) {
+        volcado_tienda();
+        $GLOBALS['__wp_meta'][8310] += ['_tpv_product_id' => 502, '_manage_stock' => 'yes', '_stock' => 1];
+        $sync = (new TPV_Sync_Product_Sync(new ApiVolcadoFalsa()))->conStockEnVuelo(fn () => [8310 => 2.0]);
+        $sync->update_stock(502, 2.0);
+        $t->assertEquals(0.0, (float) stock_meta(8310, '_stock'));
+        $t->assertEquals('outofstock', stock_meta(8310, '_stock_status'), 'las 2 que quedan ya son de pedidos web');
+    });
+
+    $t->test('variant.stock_adjusted: talla con TPV − en vuelo', function ($t) {
+        volcado_tienda();
+        $antes = $GLOBALS['wpdb'];
+        $GLOBALS['__wp_meta'][8401] = ['_tpv_option_value_id' => 71, '_manage_stock' => 'yes', '_stock' => 9];
+        $GLOBALS['wpdb'] = new class extends stdClass {
+            public string $prefix = 'wp_'; public string $posts = 'wp_posts'; public string $postmeta = 'wp_postmeta';
+            public function insert($t, $f) { return 1; }
+            public function prepare($sql, ...$a) { return (new WpdbFalso())->prepare($sql, ...$a); }
+            public function get_var($q) {
+                $esLaTalla = is_array($q) && str_contains((string) $q['sql'], "'_tpv_option_value_id'") && in_array(71, $q['args'], true);
+                return $esLaTalla ? 8401 : (new WpdbFalso())->get_var($q);
+            }
+            public function get_col($q) { return []; }
+            public function get_results($q, $f = null) { return []; }
+        };
+        if (!function_exists('wp_get_post_parent_id')) { function wp_get_post_parent_id($id) { return 0; } }
+        $sync = (new TPV_Sync_Product_Sync(new ApiVolcadoFalsa()))->conStockEnVuelo(fn () => [8401 => 1.0]);
+        $sync->update_variant_stock(71, 5.0);
+        $t->assertEquals(4.0, (float) stock_meta(8401, '_stock'));
+        $GLOBALS['wpdb'] = $antes;
+    });
+
+    $t->test('product.updated (upsert): TPV − en vuelo', function ($t) {
+        volcado_tienda();
+        $GLOBALS['__wp_meta'][8310] += ['_tpv_product_id' => 502, '_manage_stock' => 'yes', '_stock' => 4];
+        $sync = (new TPV_Sync_Product_Sync(new ApiVolcadoFalsa()))->conStockEnVuelo(fn () => [8310 => 2.0]);
+        $sync->upsert(tpv_producto(502, ['subtract' => true, 'quantity' => 6]));
+        $t->assertEquals(4, (int) stock_meta(8310, '_stock'));
+    });
+
+    $t->test('las tallas del upsert también pasan por el mismo cálculo', function ($t) {
+        $src = (string) file_get_contents(dirname(__DIR__) . '/includes/class-product-sync.php');
+        preg_match('/private function sync_variations\(.*?\n    \}/s', $src, $m);
+        $t->assert((bool) preg_match('/\$quantity\s*=\s*\$this->stockParaWoo\(\s*\$varId\s*,/', $m[0] ?? ''),
+            'la talla emparejada escribe stockParaWoo($varId, …), no el número del TPV');
+    });
+
+    $t->test('el repaso no resta dos veces (compara con TPV − en vuelo, escribe vía update_stock)', function ($t) {
+        volcado_tienda();
+        $GLOBALS['__wp_meta'][8306] = ['_tpv_product_id' => 900, '_manage_stock' => 'yes', '_stock' => 9];
+        $api = new ApiReconcileFalsa([900 => tpv_producto(900, ['subtract' => true, 'quantity' => 6])]);
+        (new TPV_Sync_Product_Sync($api))->conStockEnVuelo(fn () => [8306 => 2.0])->reconcile(100);
+        $t->assertEquals(4.0, (float) stock_meta(8306, '_stock'), '6 − 2, no 6 − 2 − 2');
+    });
+
+    $t->test('lo en vuelo se consulta una vez por petición, no por aviso', function ($t) {
+        volcado_tienda();
+        $GLOBALS['__wp_meta'][8310] += ['_tpv_product_id' => 502, '_manage_stock' => 'yes', '_stock' => 4];
+        $GLOBALS['__wp_meta'][8306] = ['_tpv_product_id' => 900, '_manage_stock' => 'yes', '_stock' => 9];
+        $consultas = 0;
+        $sync = (new TPV_Sync_Product_Sync(new ApiVolcadoFalsa()))->conStockEnVuelo(function () use (&$consultas) {
+            $consultas++;
+            return [];
+        });
+        $sync->update_stock(502, 5.0);
+        $sync->update_stock(900, 5.0);
+        $t->assertEquals(1, $consultas, 'un webhook con 50 avisos no puede hacer 50 consultas de pedidos');
+    });
 }

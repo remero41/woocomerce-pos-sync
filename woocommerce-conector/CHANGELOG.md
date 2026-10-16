@@ -12,8 +12,9 @@
 
 - **Lo vendido en la web que el TPV aún no tiene se respeta.** Una
   transferencia en espera, o un pedido que todavía no ha llegado al TPV, ya
-  restó sus unidades en la tienda. El repaso (y el botón «Reconciliar») ya no
-  las devuelve, así que no se pueden vender dos veces.
+  restó sus unidades en la tienda. Ni el repaso, ni el botón «Reconciliar»,
+  ni los avisos del TPV (una venta de caja, un ajuste o un cambio del
+  producto) las devuelven, así que no se pueden vender dos veces.
 
 - El repaso sigue la regla de siempre: solo cuando el stock lo manda el TPV,
   y solo en los productos que cuentan stock en los dos lados.
