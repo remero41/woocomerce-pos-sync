@@ -480,9 +480,15 @@ class TPV_Sync_Product_Sync
             delete_post_meta($postId, '_stock_status');
             delete_post_meta($postId, '_manage_stock');
             wp_set_object_terms($postId, 'variable', 'product_type');
+            // El padre se recalcula YA variable y sin metas propias de stock.
+            // Antes el recálculo iba dentro de sync_variations, cuando un
+            // producto recién creado aún no era variable (WC no hacía nada) y
+            // el borrado de arriba le quitaba después su estado.
+            $this->recalcularPadreVariable($postId);
         } else {
             // Sin opciones: producto simple
             wp_set_object_terms($postId, 'simple', 'product_type');
+            self::asentarEstadoStock($postId);
         }
 
         // Vaciar caché WC
@@ -628,10 +634,7 @@ class TPV_Sync_Product_Sync
         try {
             $isVariable = has_term('variable', 'product_type', $postId);
             if ($isVariable) {
-                wc_delete_product_transients($postId);
-                if (class_exists('WC_Product_Variable')) {
-                    WC_Product_Variable::sync($postId);
-                }
+                $this->recalcularPadreVariable($postId);
                 return;
             }
             // Woo no cuenta este producto: el número del TPV no significa
@@ -643,6 +646,7 @@ class TPV_Sync_Product_Sync
             $quantity = $this->stockParaWoo($postId, $quantity);
             update_post_meta($postId, '_stock', $quantity);
             update_post_meta($postId, '_stock_status', $quantity > 0 ? 'instock' : 'outofstock');
+            self::asentarEstadoStock($postId);
             wc_delete_product_transients($postId);
         } finally {
             $GLOBALS['tpv_sync_skip_wc_stock_push'] = false;
@@ -667,20 +671,138 @@ class TPV_Sync_Product_Sync
 
         $GLOBALS['tpv_sync_skip_wc_stock_push'] = true;
         try {
-            update_post_meta($varId, '_manage_stock', 'yes');
-            update_post_meta($varId, '_stock', $quantity);
-            update_post_meta($varId, '_stock_status', $quantity > 0 ? 'instock' : 'outofstock');
+            $this->escribirStockVariacion($varId, $quantity);
 
             $parentId = wp_get_post_parent_id($varId);
             if ($parentId) {
-                wc_delete_product_transients($parentId);
-                if (class_exists('WC_Product_Variable')) {
-                    WC_Product_Variable::sync($parentId);
-                }
+                $this->recalcularPadreVariable($parentId);
             }
         } finally {
             $GLOBALS['tpv_sync_skip_wc_stock_push'] = false;
         }
+    }
+
+    /**
+     * Metas de stock de una variación. Su fila de `wc_product_meta_lookup` la
+     * rehace recalcularPadreVariable(), que es quien la lee.
+     */
+    private function escribirStockVariacion(int $varId, float $quantity): void
+    {
+        update_post_meta($varId, '_manage_stock', 'yes');
+        update_post_meta($varId, '_stock_status', $quantity > 0 ? 'instock' : 'outofstock');
+        update_post_meta($varId, '_stock', $quantity);
+    }
+
+    /**
+     * Rehace la fila de `wc_product_meta_lookup` desde los metas actuales,
+     * con el mismo método con el que la rehace WC al guardar. No hay vía
+     * pública que lo haga sin escribir también el stock (update_product_stock
+     * le crea `_stock` = 0 a un producto que no lo lleva).
+     */
+    private static function refrescarLookup(int $postId): void
+    {
+        if (!class_exists('WC_Product_Data_Store_CPT')) return;
+        wp_cache_delete($postId, 'post_meta');
+        wp_cache_delete('lookup_table', 'object_' . $postId);
+        (function (int $id): void {
+            $this->update_lookup_table($id, 'wc_product_meta_lookup');
+        })->call(new WC_Product_Data_Store_CPT(), $postId);
+    }
+
+    /**
+     * Tras escribir los metas de stock de un producto (no variable), deja
+     * coherente lo demás que WC lee: la fila de `wc_product_meta_lookup`
+     * (filtros del listado, Store API) y el término `outofstock` de
+     * `product_visibility` (con «Ocultar agotados», un producto repuesto en
+     * la caja seguía escondido).
+     */
+    private static function asentarEstadoStock(int $postId): void
+    {
+        if (!class_exists('WC_Product_Data_Store_CPT')) return;
+        self::refrescarLookup($postId);
+        if (get_post_meta($postId, '_stock_status', true) === 'outofstock') {
+            wp_set_object_terms($postId, 'outofstock', 'product_visibility', true);
+        } else {
+            wp_remove_object_terms($postId, 'outofstock', 'product_visibility');
+        }
+    }
+
+    /**
+     * Recalcula el estado del padre variable a partir de sus variaciones.
+     *
+     * WC decide si el padre tiene stock leyendo `wc_product_meta_lookup` de
+     * las variaciones, no sus metas. El conector las crea con wp_insert_post
+     * y les escribe el stock con update_post_meta, así que la tabla se
+     * quedaba sin fila o con el estado viejo y el padre salía «Sin
+     * existencias» con tallas en stock (lulubeauty, 17-10-2026). Por eso se
+     * rehacen sus filas antes de recalcular; de paso cura los padres que ya
+     * estaban rotos en cuanto llega cualquier aviso de stock.
+     *
+     * WC_Product_Variable::sync() GUARDA el padre, y guardar dispara
+     * `woocommerce_update_product`: sin las guardas, un aviso de stock del TPV
+     * (una venta de caja) volvía a la caja como si la tienda hubiera editado
+     * el producto, con las tallas tal como las tiene Woo, y la caja las
+     * rehacía perdiendo el código de barras de cada talla.
+     */
+    private function recalcularPadreVariable(int $parentId): void
+    {
+        $antes = [
+            $GLOBALS['tpv_sync_skip_wc_product_push'] ?? false,
+            $GLOBALS['tpv_sync_skip_wc_stock_push'] ?? false,
+        ];
+        $GLOBALS['tpv_sync_skip_wc_product_push'] = true;
+        $GLOBALS['tpv_sync_skip_wc_stock_push']   = true;
+        try {
+            wc_delete_product_transients($parentId);
+            if (class_exists('WC_Product_Variable')) {
+                $hijos = get_children(['post_parent' => $parentId, 'post_type' => 'product_variation',
+                    'post_status' => 'any', 'fields' => 'ids', 'numberposts' => -1]);
+                foreach ($hijos as $hijo) {
+                    self::refrescarLookup((int) $hijo);
+                }
+                WC_Product_Variable::sync($parentId);
+            }
+        } finally {
+            [$GLOBALS['tpv_sync_skip_wc_product_push'], $GLOBALS['tpv_sync_skip_wc_stock_push']] = $antes;
+        }
+    }
+
+    /**
+     * Repasa una tanda de productos variables enlazados con el TPV y recalcula
+     * el estado de cada padre (ver recalcularPadreVariable). Lo lanza el
+     * cambio de versión del plugin para curar las tiendas que ya tienen
+     * padres «Sin existencias» con tallas en stock; no habla con el TPV.
+     *
+     * @return array{revisados:int, curados:int, siguiente:int} siguiente = 0 si no quedan
+     */
+    public function curarPadresVariables(int $porTanda = 100, int $desde = 0): array
+    {
+        global $wpdb;
+        $ids = array_map('intval', $wpdb->get_col($wpdb->prepare(
+            "SELECT p.ID FROM {$wpdb->posts} p
+               JOIN {$wpdb->postmeta} m ON m.post_id = p.ID AND m.meta_key = %s
+               JOIN {$wpdb->term_relationships} tr ON tr.object_id = p.ID
+               JOIN {$wpdb->term_taxonomy} tt ON tt.term_taxonomy_id = tr.term_taxonomy_id
+                    AND tt.taxonomy = 'product_type'
+               JOIN {$wpdb->terms} t ON t.term_id = tt.term_id AND t.slug = 'variable'
+              WHERE p.post_type = 'product' AND p.ID > %d
+              ORDER BY p.ID LIMIT %d",
+            self::TPV_ID_META, $desde, $porTanda)));
+
+        $curados = 0;
+        foreach ($ids as $id) {
+            $antes = (string) get_post_meta($id, '_stock_status', true);
+            $this->recalcularPadreVariable($id);
+            wp_cache_delete($id, 'post_meta');
+            if ((string) get_post_meta($id, '_stock_status', true) !== $antes) {
+                $curados++;
+            }
+        }
+        return [
+            'revisados' => count($ids),
+            'curados'   => $curados,
+            'siguiente' => count($ids) === $porTanda ? (int) end($ids) : 0,
+        ];
     }
 
     // ─── Reconciliación periódica ─────────────────────────────────────────────
@@ -825,6 +947,9 @@ class TPV_Sync_Product_Sync
                 $isVar  = !empty($data['options']);
 
                 if ($isVar) {
+                    if ($postId) {
+                        $this->reemparejarTallas($postId, (array) $data['options'], $tpvId);
+                    }
                     // Reconciliar variante a variante
                     foreach ($data['options'] ?? [] as $opt) {
                         foreach ($opt['values'] ?? [] as $val) {
@@ -2853,13 +2978,26 @@ class TPV_Sync_Product_Sync
         $motivo = $compatible ? '' : 'Woo tiene atributos de variación (' . implode(', ', $attrsWooN)
             . ') que no son las opciones del TPV (' . implode(', ', $taxTpv) . '): se respeta la estructura de Woo';
 
-        $porPov = []; $porCodigo = []; $porValor = [];
+        // Un código solo identifica una talla si es único en los dos lados: tras
+        // el rebote de lulubeauty (17-10-2026) todas las tallas llevaban el
+        // código del padre y la primera de la caja se casaba con la primera
+        // variación de Woo, fuera cual fuera su talla.
+        $codigosTpv = [];
+        foreach ($options as $opt) {
+            foreach ((array) ($opt['values'] ?? []) as $val) {
+                $c = strtolower(trim((string) ($val['code_bar'] ?? '')));
+                if ($c !== '') $codigosTpv[$c] = ($codigosTpv[$c] ?? 0) + 1;
+            }
+        }
+        $porPov = []; $porCodigo = []; $porValor = []; $codigoRepetido = [];
         foreach ($existentes as $varId => $e) {
             $varId = (int) $varId;
             if ((int) ($e['pov'] ?? 0) > 0) $porPov[(int) $e['pov']] = $varId;
             foreach (['sku', 'gtin'] as $k) {
                 $c = strtolower(trim((string) ($e[$k] ?? '')));
-                if ($c !== '' && !isset($porCodigo[$c])) $porCodigo[$c] = $varId;
+                if ($c === '') continue;
+                if (isset($porCodigo[$c]) && $porCodigo[$c] !== $varId) $codigoRepetido[$c] = true;
+                $porCodigo[$c] = $porCodigo[$c] ?? $varId;
             }
             $attrs = (array) ($e['attrs'] ?? []);
             if (count($attrs) === 1 && count($taxTpv) === 1) {
@@ -2876,7 +3014,9 @@ class TPV_Sync_Product_Sync
                 $valoresTpv[$povId] = true;
                 $cands = [$porPov[$povId] ?? 0];
                 $code = strtolower(trim((string) ($val['code_bar'] ?? '')));
-                if ($code !== '') $cands[] = $porCodigo[$code] ?? 0;
+                if ($code !== '' && empty($codigoRepetido[$code]) && ($codigosTpv[$code] ?? 0) === 1) {
+                    $cands[] = $porCodigo[$code] ?? 0;
+                }
                 if ($compatible) $cands[] = $porValor[self::slugAtributo((string) ($val['value_name'] ?? ''))] ?? 0;
                 $varId = 0;
                 foreach ($cands as $c) { if ($c > 0 && !isset($usadas[$c])) { $varId = $c; break; } }
@@ -2917,6 +3057,33 @@ class TPV_Sync_Product_Sync
             ];
         }
         return $foto;
+    }
+
+    /**
+     * Vuelve a enlazar las variaciones de Woo con los ids de talla que tiene
+     * HOY el TPV (product_option_value_id), con el mismo emparejado que el
+     * alta (id, código, valor). Si el TPV rehízo las tallas con ids nuevos
+     * —lo hacía cada rebote de una venta de caja (lulubeauty, 17-10-2026)—
+     * las variaciones apuntaban a ids que ya no existen y ningún aviso ni
+     * repaso las volvía a tocar. Solo re-enlaza: no crea ni borra.
+     *
+     * @return int variaciones re-enlazadas
+     */
+    private function reemparejarTallas(int $postId, array $options, int $tpvId): int
+    {
+        $existentes = $this->fotoVariaciones($postId);
+        $plan = self::planVariaciones($options, $existentes, $this->atributosDeVariacion($postId));
+        $n = 0;
+        foreach ($plan['emparejadas'] as $povId => $varId) {
+            if ((int) ($existentes[$varId]['pov'] ?? 0) !== (int) $povId) {
+                update_post_meta((int) $varId, '_tpv_option_value_id', (int) $povId);
+                $n++;
+            }
+        }
+        if ($n > 0) {
+            $this->log('ok', $tpvId, "Re-enlazadas $n tallas del post $postId con los ids actuales del TPV");
+        }
+        return $n;
     }
 
     /** Atributos de variación que el producto ya tiene en Woo (taxonomías o nombres propios). */
@@ -3027,9 +3194,7 @@ class TPV_Sync_Product_Sync
                 }
 
                 $quantity = $this->stockParaWoo($varId, (float) $quantity);
-                update_post_meta($varId, '_manage_stock',  'yes');
-                update_post_meta($varId, '_stock',         $quantity);
-                update_post_meta($varId, '_stock_status',  $quantity > 0 ? 'instock' : 'outofstock');
+                $this->escribirStockVariacion($varId, $quantity);
                 // El precio solo se escribe en las nuevas o cuando el TPV manda
                 // el catálogo: una rebaja puesta en Woo no se pisa por un stock.
                 if ($nueva || get_option('tpv_sync_principal', '') === 'tpv') {
@@ -3045,10 +3210,8 @@ class TPV_Sync_Product_Sync
             update_post_meta($varId, '_stock', 0);
             update_post_meta($varId, '_stock_status', 'outofstock');
         }
-
-        // ── 4. Sincronizar precios mín/máx del producto padre ─────────────────
-        WC_Product_Variable::sync($postId);
-        wc_delete_product_transients($postId);
+        // El padre (precios mín/máx y estado de stock) lo recalcula quien
+        // llama, cuando el producto ya es variable: ver upsert().
     }
 
     // ─── Registrar atributo global en WooCommerce ─────────────────────────────

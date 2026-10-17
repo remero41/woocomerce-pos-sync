@@ -1,3 +1,25 @@
+## 2.14.0
+
+### Los productos con tallas ya no salen «Sin existencias» si les queda stock
+
+- **Un producto con tallas en stock sale en stock en la tienda.** Antes,
+  después de una venta en caja, el producto podía salir «Sin existencias» en
+  el listado aunque la ficha dejara comprar sus tallas.
+
+- **Una venta en caja ya no cambia el producto en el TPV.** Antes, al llegar
+  a la tienda una venta de un producto con tallas, la tienda volvía a mandar
+  el producto entero al TPV. El TPV rehacía las tallas y perdía el código de
+  barras de cada una, que se quedaba con la referencia del producto.
+
+- **Al actualizar a esta versión se arreglan solos** los productos que ya
+  estaban mal, a los pocos minutos y sin conexión con el TPV. El repaso de
+  stock de después vuelve a enlazar las tallas que el TPV había rehecho y les
+  pone su stock.
+
+- **Productos sin tallas:** cuando el TPV los agota o los repone, también se
+  actualizan en los filtros de stock de la tienda y en «Ocultar productos
+  agotados». Antes un producto repuesto en caja podía seguir oculto.
+
 ## 2.13.0
 
 ### El stock se repasa solo, cada noche

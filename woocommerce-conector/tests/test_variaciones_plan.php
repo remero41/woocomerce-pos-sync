@@ -54,6 +54,46 @@ function run_variaciones_plan_tests(WooTestRunner $t): void
         $t->assertEquals([], $plan['sobrantes'], 'un enlace viejo no es motivo para borrar: se adopta');
     });
 
+    // lulubeauty (17-10-2026): tras el rebote de una venta de caja, el TPV
+    // tenía TODAS las tallas con el código del padre, y Woo heredaba ese mismo
+    // sku en sus variaciones. Un código repetido no identifica una talla: la
+    // primera de la caja se casaba con la primera variación de Woo, fuera
+    // cual fuera su talla.
+    $t->test('un código que comparten varias tallas no empareja: manda el nombre del valor', function ($t) {
+        $opts = opciones_tpv([103 => ['L', 'ZK-26042.'], 101 => ['S', 'ZK-26042.'], 102 => ['M', 'ZK-26042.']]);
+        $woo = [
+            2901 => ['pov' => 0, 'sku' => 'ZK-26042.', 'gtin' => '', 'attrs' => ['pa_talla' => 's']],
+            2902 => ['pov' => 0, 'sku' => 'ZK-26042.', 'gtin' => '', 'attrs' => ['pa_talla' => 'm']],
+            2903 => ['pov' => 0, 'sku' => 'ZK-26042.', 'gtin' => '', 'attrs' => ['pa_talla' => 'l']],
+        ];
+        $plan = TPV_Sync_Product_Sync::planVariaciones($opts, $woo, ['pa_talla']);
+        $t->assertEquals([103 => 2903, 101 => 2901, 102 => 2902], $plan['emparejadas'],
+            'la L de la caja con la L de Woo, no con la primera que tenga el código');
+    });
+
+    $t->test('un código repetido solo en Woo tampoco empareja', function ($t) {
+        $opts = opciones_tpv([103 => ['L', 'ZK-26042.'], 101 => ['S', '8400000000017']]);
+        $woo = [
+            2901 => ['pov' => 0, 'sku' => 'ZK-26042.', 'gtin' => '8400000000017', 'attrs' => ['pa_talla' => 's']],
+            2903 => ['pov' => 0, 'sku' => 'ZK-26042.', 'gtin' => '', 'attrs' => ['pa_talla' => 'l']],
+        ];
+        $plan = TPV_Sync_Product_Sync::planVariaciones($opts, $woo, ['pa_talla']);
+        $t->assertEquals([103 => 2903, 101 => 2901], $plan['emparejadas'],
+            'el GTIN único sí vale; el sku que comparten dos variaciones, no');
+    });
+
+    $t->test('un código repetido solo en la caja tampoco empareja', function ($t) {
+        // La caja rehízo las tallas con el código del padre; en Woo solo la S lo tiene.
+        $opts = opciones_tpv([103 => ['L', 'ZK-26042.'], 101 => ['S', 'ZK-26042.']]);
+        $woo = [
+            2901 => ['pov' => 0, 'sku' => 'ZK-26042.', 'gtin' => '', 'attrs' => ['pa_talla' => 's']],
+            2903 => ['pov' => 0, 'sku' => '', 'gtin' => '', 'attrs' => ['pa_talla' => 'l']],
+        ];
+        $plan = TPV_Sync_Product_Sync::planVariaciones($opts, $woo, ['pa_talla']);
+        $t->assertEquals([103 => 2903, 101 => 2901], $plan['emparejadas'],
+            'la L de la caja no se queda con la S de Woo por compartir código');
+    });
+
     $t->test('valor nuevo en el TPV ⇒ se crea; valor que ya no está ⇒ sobrante (privada), nunca borrada', function ($t) {
         $opts = opciones_tpv([101 => ['S', ''], 104 => ['XL', '']]);
         $woo = [
