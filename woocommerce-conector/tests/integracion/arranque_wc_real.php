@@ -1,0 +1,121 @@
+<?php
+declare(strict_types=1);
+/**
+ * Arranque de los tests de INTEGRACIÓN: WordPress + WooCommerce de verdad.
+ *
+ * Los tests de tests/ ejecutan el plugin con WordPress en memoria. Eso no ve
+ * lo que hace WooCommerce por dentro: el estado de stock de un padre variable
+ * sale de la tabla `wc_product_meta_lookup`, no de los metas, y guardar el
+ * padre dispara `woocommerce_update_product`. Ningún stub lo reproducía y por
+ * eso lulubeauty (17-10-2026) tenía productos «Sin existencias» con tallas en
+ * stock y cada venta de caja rebotaba a la caja como edición del producto.
+ *
+ * Qué hace:
+ *   - Carga el WordPress de WP_ROOT (por defecto el tpv85 local, WC 10.6.2).
+ *   - Quita el conector instalado de los plugins activos y carga en su lugar
+ *     el de ESTE árbol (el que se está probando).
+ *   - Las opciones del conector viven en memoria (no toca las de la tienda).
+ *   - Ninguna petición sale a la red: `pre_http_request` las apunta en
+ *     $GLOBALS['__http'] y responde como respondería el TPV.
+ *
+ * Crea productos reales en la base de datos de WP_ROOT y los borra al acabar.
+ * Uso: php tests/integracion/run.php [/ruta/al/wordpress]
+ */
+
+$wpRoot = $argv[1] ?? (getenv('WP_ROOT') ?: '/var/www/html/tpv85/public_html');
+if (!is_file($wpRoot . '/wp-load.php')) {
+    fwrite(STDERR, "No hay WordPress en $wpRoot\n");
+    exit(2);
+}
+
+define('WP_USE_THEMES', false);
+define('TPV_SYNC_INTEGRACION', true);
+
+$GLOBALS['__plugin_bajo_prueba'] = realpath(__DIR__ . '/../../woocommerce-conector.php');
+$GLOBALS['__http'] = [];
+// Lo que el TPV devuelve en GET /products/{id}; los tests lo rellenan.
+$GLOBALS['__tpv_productos'] = [];
+
+/** Opciones del conector, en memoria. */
+$GLOBALS['__opciones_conector'] = [
+    'tpv_sync_api_url'        => 'https://tpv.prueba.invalid/api/v1',
+    'tpv_sync_client_id'      => 'wc_prueba',
+    'tpv_sync_client_secret'  => 'secreto',
+    'tpv_sync_module_catalog' => 1,
+    'tpv_sync_principal'      => '',
+];
+
+function integracion_filtro(string $hook, callable $fn, int $prio = 10, int $args = 1): void
+{
+    $GLOBALS['wp_filter'][$hook][$prio][] = ['function' => $fn, 'accepted_args' => $args];
+}
+
+// Antes de cargar WP solo se pueden dejar filtros en $wp_filter (WP_Hook los adopta).
+$GLOBALS['wp_filter'] = [];
+
+integracion_filtro('option_active_plugins', static function ($activos) {
+    return array_values(array_filter((array) $activos,
+        static fn ($p) => !str_starts_with((string) $p, 'woocommerce-conector/')));
+});
+
+integracion_filtro('plugins_loaded', static function () {
+    require_once $GLOBALS['__plugin_bajo_prueba'];
+}, -1000);
+
+foreach (array_keys($GLOBALS['__opciones_conector']) as $clave) {
+    integracion_filtro("pre_option_$clave", static function ($pre, $opcion) {
+        return $GLOBALS['__opciones_conector'][$opcion] ?? $pre;
+    }, 10, 2);
+}
+// La versión ya «instalada»: si no, el plugin programa su repaso en la tienda.
+integracion_filtro('pre_option_tpv_sync_version_instalada', static function ($pre) {
+    return defined('TPV_SYNC_VERSION') ? TPV_SYNC_VERSION : $pre;
+});
+integracion_filtro('pre_transient_tpv_sync_token', static function () {
+    return ['token' => 'token-prueba', 'exp' => time() + 3600];
+});
+
+integracion_filtro('pre_http_request', static function ($pre, $args, $url) {
+    $metodo = strtoupper((string) ($args['method'] ?? 'GET'));
+    $ruta   = (string) parse_url((string) $url, PHP_URL_PATH);
+    $ruta   = preg_replace('#^/api/v1#', '', $ruta);
+    $cuerpo = isset($args['body']) && is_string($args['body']) ? json_decode($args['body'], true) : null;
+    $GLOBALS['__http'][] = ['metodo' => $metodo, 'ruta' => $ruta, 'cuerpo' => $cuerpo];
+
+    $respuesta = ['data' => []];
+    if ($metodo === 'GET' && preg_match('#^/products/(\d+)$#', $ruta, $m)) {
+        $respuesta = ['data' => $GLOBALS['__tpv_productos'][(int) $m[1]] ?? []];
+    } elseif ($metodo === 'GET' && $ruta === '/products') {
+        $respuesta = ['data' => array_values($GLOBALS['__tpv_productos']), 'meta' => ['cursor' => null]];
+    } elseif ($metodo === 'PATCH' && preg_match('#^/products/(\d+)#', $ruta, $m)) {
+        $respuesta = ['data' => ['product_id' => (int) $m[1]]];
+    } elseif ($ruta === '/batch') {
+        // Solo lecturas en lote (el repaso): GET /products/{id}.
+        $resultados = [];
+        foreach ((array) ($cuerpo['operations'] ?? $cuerpo['requests'] ?? []) as $i => $op) {
+            $id = preg_match('#^/products/(\d+)$#', (string) ($op['path'] ?? ''), $m) ? (int) $m[1] : 0;
+            $datos = $GLOBALS['__tpv_productos'][$id] ?? null;
+            $resultados[] = ['index' => $i, 'status' => $datos ? 200 : 404,
+                'body' => ['data' => $datos], 'error' => null];
+        }
+        $respuesta = ['results' => $resultados];
+    }
+    return [
+        'headers'  => [],
+        'body'     => wp_json_encode($respuesta),
+        'response' => ['code' => 200, 'message' => 'OK'],
+        'cookies'  => [],
+        'filename' => null,
+    ];
+}, 10, 3);
+
+require $wpRoot . '/wp-load.php';
+
+if (!class_exists('TPV_Sync') || !function_exists('WC')) {
+    fwrite(STDERR, "No se cargó el conector bajo prueba o WooCommerce\n");
+    exit(2);
+}
+if (realpath(TPV_SYNC_DIR . 'woocommerce-conector.php') !== $GLOBALS['__plugin_bajo_prueba']) {
+    fwrite(STDERR, 'Se cargó otro conector: ' . TPV_SYNC_DIR . "\n");
+    exit(2);
+}

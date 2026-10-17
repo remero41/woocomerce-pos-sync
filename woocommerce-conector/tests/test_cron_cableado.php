@@ -70,6 +70,22 @@ function run_cron_cableado_tests(WooTestRunner $t): void
         $t->assert(($repaso[0]['en'] ?? 9999) <= 600, 'en minutos, no al día siguiente');
     });
 
+    // ── Cura de padres variables (lulubeauty, 17-10-2026) ─────────────────
+    // Las tiendas que ya tienen padres «Sin existencias» con tallas en stock
+    // se curan solas al recibir la versión, sin esperar a una venta.
+    $t->test('al actualizar se curan los padres variables una vez, enseguida', function ($t) use ($r) {
+        $cura = array_values(array_filter($r['al_actualizar']['sueltos'] ?? [],
+            static fn ($e) => $e['hook'] === 'tpv_sync_curar_padres_variables'));
+        $t->assertEquals(1, count($cura), 'una cura, no ninguna ni varias');
+        $t->assertEquals([0], $cura[0]['args'] ?? null, 'desde el primer producto');
+        $t->assert(($cura[0]['en'] ?? 9999) <= 600, 'en minutos, no al día siguiente');
+    });
+
+    $t->test('la cura de padres tiene quien la atienda', function ($t) use ($r) {
+        $t->assert(in_array('tpv_sync_curar_padres_variables', $r['acciones'], true),
+            'programada y sin add_action: no se ejecutaría nunca');
+    });
+
     $t->test('todo evento programado tiene su add_action', function ($t) use ($r) {
         $huerfanos = array_diff(array_keys($r['programados']), $r['acciones']);
         $t->assertEquals([], array_values($huerfanos), 'programado y sin nadie que lo ejecute');

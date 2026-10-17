@@ -73,6 +73,9 @@ if (get_option('tpv_sync_version_instalada') !== TPV_SYNC_VERSION) {
     // Y un repaso ahora: lo que se desincronizó con la versión anterior (las
     // ventas de caja no llegaban a la tienda) no espera a la noche.
     wp_schedule_single_event(time() + 5 * MINUTE_IN_SECONDS, 'tpv_sync_reconcile_stock_total', ['']);
+    // Y los padres variables «Sin existencias» con tallas en stock que dejó la
+    // versión anterior (lulubeauty, 17-10-2026): se curan sin esperar a una venta.
+    wp_schedule_single_event(time() + 2 * MINUTE_IN_SECONDS, 'tpv_sync_curar_padres_variables', [0]);
 }
 
 (new TPV_Sync_Updater(
@@ -477,5 +480,17 @@ function tpv_sync_repaso_stock_pagina($cursor = ''): void
     }
 }
 add_action('tpv_sync_reconcile_stock_total', 'tpv_sync_repaso_stock_pagina', 10, 1);
+
+// ─── Cura de padres variables, por tandas ────────────────────────────────────
+// Recalcula el estado de stock de cada padre variable enlazado desde sus
+// tallas (ver TPV_Sync_Product_Sync::curarPadresVariables). Solo toca Woo: no
+// habla con el TPV, así que no depende de la conexión ni del módulo catálogo.
+add_action('tpv_sync_curar_padres_variables', static function ($desde = 0): void {
+    if (!class_exists('TPV_Sync')) return;
+    $r = TPV_Sync::instance()->products->curarPadresVariables(100, (int) $desde);
+    if ($r['siguiente'] > 0) {
+        wp_schedule_single_event(time() + 10, 'tpv_sync_curar_padres_variables', [$r['siguiente']]);
+    }
+}, 10, 1);
 // Compat: un evento ya programado por una versión anterior no debe volcar el catálogo.
 add_action('tpv_sync_import_all', static function () { tpv_sync_repaso_stock_pagina(''); });
