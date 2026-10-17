@@ -35,6 +35,8 @@ $GLOBALS['__plugin_bajo_prueba'] = realpath(__DIR__ . '/../../woocommerce-conect
 $GLOBALS['__http'] = [];
 // Lo que el TPV devuelve en GET /products/{id}; los tests lo rellenan.
 $GLOBALS['__tpv_productos'] = [];
+// Lo que el TPV anuncia en GET /health; los tests lo cambian para simular una API vieja.
+$GLOBALS['__tpv_capacidades'] = ['price_gross_write', 'categories_write', 'variants_in_place'];
 
 /** Opciones del conector, en memoria. */
 $GLOBALS['__opciones_conector'] = [
@@ -74,6 +76,9 @@ integracion_filtro('pre_option_tpv_sync_version_instalada', static function ($pr
 integracion_filtro('pre_transient_tpv_sync_token', static function () {
     return ['token' => 'token-prueba', 'exp' => time() + 3600];
 });
+// Las capacidades no se recuerdan entre tests: cada uno ve las de $GLOBALS.
+integracion_filtro('pre_transient_tpv_sync_api_capacidades', static fn () => false);
+integracion_filtro('pre_set_transient_tpv_sync_api_capacidades', static fn () => false);
 
 integracion_filtro('pre_http_request', static function ($pre, $args, $url) {
     $metodo = strtoupper((string) ($args['method'] ?? 'GET'));
@@ -83,7 +88,11 @@ integracion_filtro('pre_http_request', static function ($pre, $args, $url) {
     $GLOBALS['__http'][] = ['metodo' => $metodo, 'ruta' => $ruta, 'cuerpo' => $cuerpo];
 
     $respuesta = ['data' => []];
-    if ($metodo === 'GET' && preg_match('#^/products/(\d+)$#', $ruta, $m)) {
+    if ($metodo === 'GET' && $ruta === '/health') {
+        $respuesta = ['data' => ['status' => 'ok', 'capabilities' => $GLOBALS['__tpv_capacidades']]];
+    } elseif ($metodo === 'DELETE' && preg_match('#^/products/(\d+)/variants/(\d+)$#', $ruta)) {
+        $respuesta = null;   // 204
+    } elseif ($metodo === 'GET' && preg_match('#^/products/(\d+)$#', $ruta, $m)) {
         $respuesta = ['data' => $GLOBALS['__tpv_productos'][(int) $m[1]] ?? []];
     } elseif ($metodo === 'GET' && $ruta === '/products') {
         $respuesta = ['data' => array_values($GLOBALS['__tpv_productos']), 'meta' => ['cursor' => null]];
@@ -102,8 +111,8 @@ integracion_filtro('pre_http_request', static function ($pre, $args, $url) {
     }
     return [
         'headers'  => [],
-        'body'     => wp_json_encode($respuesta),
-        'response' => ['code' => 200, 'message' => 'OK'],
+        'body'     => $respuesta === null ? '' : wp_json_encode($respuesta),
+        'response' => $respuesta === null ? ['code' => 204, 'message' => 'No Content'] : ['code' => 200, 'message' => 'OK'],
         'cookies'  => [],
         'filename' => null,
     ];

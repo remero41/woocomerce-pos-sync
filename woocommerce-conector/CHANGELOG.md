@@ -1,3 +1,20 @@
+## 2.15.0
+
+### Guardar un producto en la tienda ya no toca los códigos de barras de las tallas
+
+- **Cada talla manda solo su propio código** (su GTIN o su SKU propio). Antes,
+  si la talla no tenía código, la tienda mandaba el del producto, y el TPV lo
+  guardaba en todas las tallas: todas con el mismo código y la pistola sin
+  distinguirlas. Una talla sin código manda su número de variación aparte, y
+  el TPV solo lo usa si la talla no tiene ningún código.
+
+- **Borrar una talla en la tienda la borra en el TPV al momento.** Antes el TPV
+  solo se enteraba al volver a guardar el producto. Si manda el TPV, un
+  borrado en la tienda no se propaga (como con los productos).
+
+- Las dos cosas necesitan la API del TPV que trata las tallas en sitio
+  (octubre de 2026). Con una API anterior la tienda se comporta como siempre.
+
 ## 2.14.0
 
 ### Los productos con tallas ya no salen «Sin existencias» si les queda stock
