@@ -810,6 +810,9 @@ class TPV_Sync_Product_Sync
     /** @var callable|null fuente de las unidades en vuelo (tests); null = los pedidos de Woo */
     private $fuenteEnVuelo = null;
 
+    /** ¿La API trata las tallas en sitio (`variants_in_place`)? Se decide al armar las opciones. */
+    private bool $tallasEnSitio = false;
+
     /** Sustituye de dónde salen las unidades en vuelo (post_id => uds). */
     public function conStockEnVuelo(callable $fuente): self
     {
@@ -2237,6 +2240,7 @@ class TPV_Sync_Product_Sync
     {
         $children = $product->get_children();
         if (empty($children)) return [];
+        $this->tallasEnSitio = $this->api->tieneCapacidad('variants_in_place');
 
         $variations = [];
         foreach ($children as $childId) {
@@ -2348,7 +2352,11 @@ class TPV_Sync_Product_Sync
             // Código de barras de la variación: GTIN/EAN/UPC primero, SKU como
             // fallback. Si ambos vacíos, la variante no se podrá escanear.
             $vGtin = trim((string) get_post_meta($v->get_id(), '_global_unique_id', true));
-            $vSku  = trim((string) $v->get_sku());
+            // 'edit': el SKU PROPIO de la variación. Sin contexto, WooCommerce
+            // devuelve el del padre cuando la talla no tiene uno, y la caja
+            // recibía la referencia del producto en todas las tallas
+            // (lulubeauty, 17-10-2026: perdió sus EAN).
+            $vSku  = trim((string) $v->get_sku('edit'));
             // Un sku autogenerado por Woo ("__WC__48808-1") no escanea nada:
             // se descarta en vez de llenar la columna CÓDIGO del TPV.
             $vBarcode = TPV_Sync_Identificadores::codigoVariante($vGtin, $vSku, (int) $v->get_id());
@@ -2363,9 +2371,10 @@ class TPV_Sync_Product_Sync
                 }
                 if (!isset($attrs[$attrLabel]['values'][$valueLabel])) {
                     $attrs[$attrLabel]['values'][$valueLabel] = [
-                        'quantity'   => 0,
-                        'price_diff' => $priceDiff,
-                        'barcode'    => '',
+                        'quantity'         => 0,
+                        'price_diff'       => $priceDiff,
+                        'barcode'          => '',
+                        'barcode_si_vacio' => '',
                     ];
                 }
                 $attrs[$attrLabel]['values'][$valueLabel]['quantity'] += $vQty;
@@ -2375,8 +2384,11 @@ class TPV_Sync_Product_Sync
                 $attrs[$attrLabel]['values'][$valueLabel]['barcode'] =
                     TPV_Sync_Identificadores::mejorCodigo(
                         (string) $attrs[$attrLabel]['values'][$valueLabel]['barcode'],
-                        $vGtin, $vSku, (int) $v->get_id()
+                        $vGtin, $vSku, $this->tallasEnSitio ? 0 : (int) $v->get_id()
                     );
+                if ($this->tallasEnSitio && $attrs[$attrLabel]['values'][$valueLabel]['barcode_si_vacio'] === '') {
+                    $attrs[$attrLabel]['values'][$valueLabel]['barcode_si_vacio'] = (string) $v->get_id();
+                }
             }
         }
 
@@ -2443,16 +2455,21 @@ class TPV_Sync_Product_Sync
             $priceDiff = TPV_Sync_Precio_Variantes::extra($vPrice, $basePrice)['price'];
 
             $vGtin = trim((string) get_post_meta($v->get_id(), '_global_unique_id', true));
-            $vSku  = trim((string) $v->get_sku());
+            // 'edit': el SKU PROPIO de la variación. Sin contexto, WooCommerce
+            // devuelve el del padre cuando la talla no tiene uno, y la caja
+            // recibía la referencia del producto en todas las tallas
+            // (lulubeauty, 17-10-2026: perdió sus EAN).
+            $vSku  = trim((string) $v->get_sku('edit'));
             // Un sku autogenerado por Woo ("__WC__48808-1") no escanea nada:
             // se descarta en vez de llenar la columna CÓDIGO del TPV.
             $vBarcode = TPV_Sync_Identificadores::codigoVariante($vGtin, $vSku, (int) $v->get_id());
 
             if (!isset($values[$comboLabel])) {
                 $values[$comboLabel] = [
-                    'quantity'   => 0,
-                    'price_diff' => $priceDiff,
-                    'barcode'    => '',
+                    'quantity'         => 0,
+                    'price_diff'       => $priceDiff,
+                    'barcode'          => '',
+                    'barcode_si_vacio' => '',
                 ];
             }
             // Stock por COMBINACIÓN (no por atributo): así no se duplica.
@@ -2461,8 +2478,11 @@ class TPV_Sync_Product_Sync
             $values[$comboLabel]['quantity'] += $vQty;
             $values[$comboLabel]['price_diff'] = $priceDiff;
             $values[$comboLabel]['barcode'] = TPV_Sync_Identificadores::mejorCodigo(
-                (string) $values[$comboLabel]['barcode'], $vGtin, $vSku, (int) $v->get_id()
+                (string) $values[$comboLabel]['barcode'], $vGtin, $vSku, $this->tallasEnSitio ? 0 : (int) $v->get_id()
             );
+            if ($this->tallasEnSitio && $values[$comboLabel]['barcode_si_vacio'] === '') {
+                $values[$comboLabel]['barcode_si_vacio'] = (string) $v->get_id();
+            }
         }
 
         if (empty($values)) return [];
@@ -2489,7 +2509,16 @@ class TPV_Sync_Product_Sync
                     'price_prefix' => $meta['price_diff'] < 0 ? '-' : '+',
                     'subtract'     => 1,
                 ];
-                if ($meta['barcode'] !== '') $value['barcode'] = $meta['barcode'];
+                // El código propio de la talla (GTIN o SKU suyo) va como
+                // `barcode`. Sin ninguno, el número de la variación va aparte:
+                // la caja lo usa solo si la talla no tiene código, así que
+                // nunca pisa un EAN. Contra una API sin `variants_in_place`
+                // el número va como `barcode`, como siempre.
+                if ($meta['barcode'] !== '') {
+                    $value['barcode'] = $meta['barcode'];
+                } elseif (($meta['barcode_si_vacio'] ?? '') !== '') {
+                    $value['barcode_si_vacio'] = $meta['barcode_si_vacio'];
+                }
                 $values[] = $value;
             }
             $result[] = [
@@ -2614,6 +2643,33 @@ class TPV_Sync_Product_Sync
 
         $this->api->delete("/products/$tpvId");
         $this->log('ok', $tpvId, "Producto DELETE (permanente WC post $postId)");
+    }
+
+    /**
+     * Hook: before_delete_post de una VARIACIÓN (Woo las borra siempre en
+     * permanente). Borrar una talla en la tienda la borra en la caja al
+     * momento: DELETE /products/{id}/variants/{vid}. Hasta la 2.15.0 el
+     * conector no oía este borrado y la caja solo se enteraba, por ausencia,
+     * en el siguiente guardado del producto; con la API que trata las tallas
+     * en sitio la ausencia ya no borra nada, así que este es el único camino.
+     */
+    public function push_wc_variation_delete_to_tpv(int $postId): void
+    {
+        if (!empty($GLOBALS['tpv_sync_skip_wc_product_push'])) return;
+        $post = get_post($postId);
+        if (!$post || $post->post_type !== 'product_variation') return;
+
+        // Si manda el TPV, la talla es suya: un borrado en Woo no se propaga.
+        if ((string) get_option('tpv_sync_principal', '') === 'tpv') return;
+
+        $povId = (int) get_post_meta($postId, '_tpv_option_value_id', true);
+        $tpvId = (int) get_post_meta((int) $post->post_parent, self::TPV_ID_META, true);
+        if (!$povId || !$tpvId) return;
+        // Una API vieja no tiene el endpoint (y borra por ausencia, como siempre).
+        if (!$this->api->tieneCapacidad('variants_in_place')) return;
+
+        $this->api->delete("/products/$tpvId/variants/$povId");
+        $this->log('ok', $tpvId, "Talla borrada en Woo (variación $postId) ⇒ borrada en el TPV (talla $povId)");
     }
 
     /**

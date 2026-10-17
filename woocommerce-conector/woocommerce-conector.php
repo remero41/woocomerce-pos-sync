@@ -4,7 +4,7 @@ declare(strict_types=1);
  * Plugin Name: Catinfog Conector
  * Plugin URI:  https://catinfog.com
  * Description: Conecta tu tienda WooCommerce con el TPV Catinfog. Sincroniza productos, stock, ventas y devoluciones en tiempo real.
- * Version:     2.14.0
+ * Version:     2.15.0
  * Author:      Catinfog
  * Text Domain: tpv-sync
  * Domain Path: /languages
@@ -12,7 +12,7 @@ declare(strict_types=1);
  */
 defined('ABSPATH') || exit;
 
-define('TPV_SYNC_VERSION', '2.14.0');
+define('TPV_SYNC_VERSION', '2.15.0');
 define('TPV_SYNC_DIR',     plugin_dir_path(__FILE__));
 define('TPV_SYNC_URL',     plugin_dir_url(__FILE__));
 
@@ -176,6 +176,8 @@ class TPV_Sync
             // Delete permanente → DELETE /products/{id} (el TPV internamente
             // mantiene el histórico — ver ProductController::delete).
             add_action('before_delete_post',           [$this->products, 'push_wc_delete_to_tpv'],  10, 1);
+            // Una variación borrada en Woo ⇒ su talla borrada en el TPV (2.15.0).
+            add_action('before_delete_post',           [$this->products, 'push_wc_variation_delete_to_tpv'], 10, 1);
         }
 
         // ── Clientes WC → TPV ────────────────────────────────────────────────
