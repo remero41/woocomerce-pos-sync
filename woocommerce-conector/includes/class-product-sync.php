@@ -411,9 +411,20 @@ class TPV_Sync_Product_Sync
         $modelTpv = trim((string)($p['model'] ?? ''));
         $skuTpv   = trim((string)($p['sku']   ?? ''));
 
+        // GTIN: el ★ si es un GTIN; si el ★ cambió a una referencia, se borra el GTIN que
+        // ESCRIBIMOS nosotros con el ★ anterior (si no, volvería al TPV como eco). Uno puesto a
+        // mano en Woo se respeta (spec varios códigos 2026-10-18).
+        $gtin = TPV_Sync_Identificadores::gtinTrasModelo(
+            $modelTpv,
+            (string) get_post_meta($postId, '_global_unique_id', true),
+            (string) get_post_meta($postId, '_tpv_model', true)
+        );
+        if ($gtin === '') {
+            delete_post_meta($postId, '_global_unique_id');
+        } elseif ($gtin !== null) {
+            update_post_meta($postId, '_global_unique_id', $gtin);
+        }
         if ($modelTpv !== '' && preg_match('/^\d{8,14}$/', $modelTpv)) {
-            // model TPV es un barcode numérico → va al campo GTIN de WC
-            update_post_meta($postId, '_global_unique_id', $modelTpv);
             // El SKU de WC guarda el sku del TPV si existe; si no, duplica el GTIN
             // para que haya algún identificador textual (compat con flujos legacy).
             update_post_meta($postId, '_sku', $skuTpv !== '' ? $skuTpv : $modelTpv);
@@ -421,8 +432,10 @@ class TPV_Sync_Product_Sync
             // model TPV es alfanumérico (ej. "WC-1234", "CAMISA-NARCISO") → SKU textual
             $skuForWc = $modelTpv !== '' ? $modelTpv : $skuTpv;
             update_post_meta($postId, '_sku', $skuForWc);
-            // No tocamos _global_unique_id: si el admin de WC lo puso a mano,
-            // respetamos su valor. Si no existía, sigue sin existir.
+        }
+        // Lo último que escribimos como ★: así se reconoce el GTIN rancio en el próximo cambio.
+        if ($modelTpv !== '') {
+            update_post_meta($postId, '_tpv_model', $modelTpv);
         }
         // Stock: solo si el TPV lo cuenta (subtract). Antes se forzaba
         // `_manage_stock=yes` con el stock del TPV SIEMPRE, y un producto que

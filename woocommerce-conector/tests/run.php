@@ -124,6 +124,7 @@ require_once __DIR__ . '/test_reconcile_dueno.php';
 require_once __DIR__ . '/test_tallas_codigo_propio.php';
 require_once __DIR__ . '/test_precio_variantes.php';
 require_once __DIR__ . '/test_sku_mapeo.php';
+require_once __DIR__ . '/test_gtin_rancio.php';
 require_once __DIR__ . '/test_imagenes_indices.php';
 require_once __DIR__ . '/test_politica_desde_ajustes.php';
 require_once __DIR__ . '/test_reconcile_enganchado.php';
@@ -202,6 +203,7 @@ run_pvp_tests($t);
 run_pvp_cuadre_tests($t);
 run_venta_a_peso_tests($t);
 run_stock_en_vuelo_tests($t);
+run_gtin_rancio_tests($t);
 
 require_once __DIR__ . '/test_categorias_puras.php';
 run_categorias_puras_tests($t);

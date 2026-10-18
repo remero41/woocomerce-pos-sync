@@ -160,4 +160,28 @@ class TPV_Sync_Identificadores
 
         return self::codigoVariante('', $sku, $variationId);
     }
+
+    /**
+     * GTIN que debe quedar en Woo tras escribir el `model` (★) del TPV (spec varios códigos
+     * 2026-10-18). Devuelve el GTIN a guardar, '' para BORRARLO o null para no tocarlo.
+     *
+     *  - ★ con pinta de GTIN (8-14 cifras) → es el GTIN.
+     *  - ★ alfanumérico: si el GTIN de Woo es el ★ ANTERIOR que escribió el propio conector, se
+     *    borra. Antes se quedaba («GTIN rancio») y, como paraProducto() prefiere el GTIN, el
+     *    siguiente guardado en Woo devolvía al TPV el ★ viejo. Un GTIN que puso el comerciante a
+     *    mano (no coincide con lo que escribimos) se respeta.
+     */
+    public static function gtinTrasModelo(string $modelTpv, string $gtinActual, string $modelAnterior): ?string
+    {
+        $modelTpv = trim($modelTpv);
+        if ($modelTpv !== '' && preg_match('/^\d{8,14}$/', $modelTpv)) {
+            return $modelTpv;
+        }
+        $gtinActual = trim($gtinActual);
+        $modelAnterior = trim($modelAnterior);
+        if ($gtinActual !== '' && $modelAnterior !== '' && $gtinActual === $modelAnterior) {
+            return '';
+        }
+        return null;
+    }
 }
