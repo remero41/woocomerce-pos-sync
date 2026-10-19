@@ -376,8 +376,13 @@ class TPV_Sync_Product_Sync
             'post_title'   => wp_strip_all_tags($p['name'] ?? ''),
             'post_status'  => self::estadoPost($postId ? (string) get_post_status($postId) : '', (int) ($p['status'] ?? 0)),
             'post_type'    => 'product',
-            'post_content' => wp_kses_post($p['description'] ?? ''),
         ];
+        // Lo que no llega no se borra: una descripción vacía es «vaciarla»,
+        // una ausente es «no la sé» (lulubeauty, 18-10: 116 productos se
+        // quedaron sin descripción en la web por un upsert sin la clave).
+        if (array_key_exists('description', $p)) {
+            $data['post_content'] = wp_kses_post((string) $p['description']);
+        }
 
         if ($postId) {
             $data['ID'] = $postId;
@@ -1022,6 +1027,23 @@ class TPV_Sync_Product_Sync
     }
 
     // ─── Actualizar datos básicos (precio, nombre, estado) ───────────────────
+
+    /**
+     * El producto completo del TPV (GET /products/{id}), para escribirlo en Woo.
+     *
+     * El listado (GET /products) sirve para comparar, no para escribir: no trae
+     * descripción, tallas, imágenes ni categorías, y un upsert con él vaciaba la
+     * descripción y dejaba simple un variable (lulubeauty, 18-10-2026). Si el
+     * detalle no llega, se lanza: mejor no tocar el producto que escribirlo a medias.
+     */
+    private function detalleTpv(int $tpvId): array
+    {
+        $detalle = $this->api->get("/products/$tpvId")['data'] ?? null;
+        if (!is_array($detalle) || (int) ($detalle['product_id'] ?? 0) !== $tpvId) {
+            throw new RuntimeException("sin detalle del producto $tpvId en el TPV: no se toca");
+        }
+        return $detalle;
+    }
 
     public function update_from_tpv(int $tpvId): void
     {
@@ -3593,7 +3615,7 @@ class TPV_Sync_Product_Sync
                 $stats['synced']++;
                 if ($dryRun) continue;
                 try {
-                    $r = $this->upsert($p);
+                    $r = $this->upsert($this->detalleTpv($tpvId));
                     if ($r !== 'created' && $r !== 'updated') {
                         $stats['synced']--;
                         $stats['skipped']++;
@@ -3689,7 +3711,7 @@ class TPV_Sync_Product_Sync
 
             if ($decision['catalogo']['accion'] === 'pull') {
                 try {
-                    $this->upsert($p);
+                    $this->upsert($this->detalleTpv($tpvId));
                     $stats['fixed']++;
                 } catch (Throwable $e) {
                     $this->log('error', $tpvId, 'upsert (manda el TPV): ' . $e->getMessage());

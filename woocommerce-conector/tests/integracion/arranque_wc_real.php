@@ -93,9 +93,20 @@ integracion_filtro('pre_http_request', static function ($pre, $args, $url) {
     } elseif ($metodo === 'DELETE' && preg_match('#^/products/(\d+)/variants/(\d+)$#', $ruta)) {
         $respuesta = null;   // 204
     } elseif ($metodo === 'GET' && preg_match('#^/products/(\d+)$#', $ruta, $m)) {
-        $respuesta = ['data' => $GLOBALS['__tpv_productos'][(int) $m[1]] ?? []];
+        // __tpv_sin_detalle: ids cuyo detalle no llega (el producto sigue en el listado).
+        $respuesta = ['data' => in_array((int) $m[1], $GLOBALS['__tpv_sin_detalle'] ?? [], true)
+            ? [] : ($GLOBALS['__tpv_productos'][(int) $m[1]] ?? [])];
     } elseif ($metodo === 'GET' && $ruta === '/products') {
-        $respuesta = ['data' => array_values($GLOBALS['__tpv_productos']), 'meta' => ['cursor' => null]];
+        // El listado de la API NO es el detalle: formatProduct (api_tpv
+        // ProductController) solo da estos campos. Sin descripción, tallas,
+        // imágenes ni categorías. Un listado falso «completo» escondió que
+        // reconciliar vaciaba descripciones en Woo (lulubeauty, 18-10-2026).
+        $campos = ['product_id', 'name', 'model', 'sku', 'price', 'special_price', 'quantity',
+            'subtract', 'status', 'image', 'tax_class_id', 'date_modified', 'sold_by_weight'];
+        $respuesta = ['data' => array_map(
+            static fn ($p) => array_intersect_key($p, array_flip($campos)),
+            array_values($GLOBALS['__tpv_productos'])
+        ), 'meta' => ['cursor' => null]];
     } elseif ($metodo === 'PATCH' && preg_match('#^/products/(\d+)#', $ruta, $m)) {
         $respuesta = ['data' => ['product_id' => (int) $m[1]]];
     } elseif ($ruta === '/batch') {
