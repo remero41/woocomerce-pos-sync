@@ -376,8 +376,13 @@ class TPV_Sync_Product_Sync
             'post_title'   => wp_strip_all_tags($p['name'] ?? ''),
             'post_status'  => self::estadoPost($postId ? (string) get_post_status($postId) : '', (int) ($p['status'] ?? 0)),
             'post_type'    => 'product',
-            'post_content' => wp_kses_post($p['description'] ?? ''),
         ];
+        // Lo que no llega no se borra: una descripción vacía es «vaciarla»,
+        // una ausente es «no la sé» (lulubeauty, 18-10: 116 productos se
+        // quedaron sin descripción en la web por un upsert sin la clave).
+        if (array_key_exists('description', $p)) {
+            $data['post_content'] = wp_kses_post((string) $p['description']);
+        }
 
         if ($postId) {
             $data['ID'] = $postId;
@@ -1022,6 +1027,23 @@ class TPV_Sync_Product_Sync
     }
 
     // ─── Actualizar datos básicos (precio, nombre, estado) ───────────────────
+
+    /**
+     * El producto completo del TPV (GET /products/{id}), para escribirlo en Woo.
+     *
+     * El listado (GET /products) sirve para comparar, no para escribir: no trae
+     * descripción, tallas, imágenes ni categorías, y un upsert con él vaciaba la
+     * descripción y dejaba simple un variable (lulubeauty, 18-10-2026). Si el
+     * detalle no llega, se lanza: mejor no tocar el producto que escribirlo a medias.
+     */
+    private function detalleTpv(int $tpvId): array
+    {
+        $detalle = $this->api->get("/products/$tpvId")['data'] ?? null;
+        if (!is_array($detalle) || (int) ($detalle['product_id'] ?? 0) !== $tpvId) {
+            throw new RuntimeException("sin detalle del producto $tpvId en el TPV: no se toca");
+        }
+        return $detalle;
+    }
 
     public function update_from_tpv(int $tpvId): void
     {
@@ -2871,15 +2893,19 @@ class TPV_Sync_Product_Sync
         $alreadySent = (array) get_post_meta($postId, '_tpv_images_sent', true);
         if (!is_array($alreadySent)) $alreadySent = [];
 
-        $thumbId  = (int) get_post_thumbnail_id($postId);
-        $thumbUrl = $thumbId > 0 ? (string) wp_get_attachment_url($thumbId) : '';
+        // Una foto que vino de la caja (sync_images la marca con _tpv_image_url)
+        // ya está en la caja: subirla otra vez era el eco que llenó de copias la
+        // caja y la web (lulubeauty, 19-10-2026). Su hueco en el orden se respeta.
+        $deLaWeb = static fn (int $attId): string =>
+            $attId > 0 && !self::vinoDeLaCaja($attId) ? (string) wp_get_attachment_url($attId) : '';
+
+        $thumbUrl = $deLaWeb((int) get_post_thumbnail_id($postId));
 
         $galleryIds = $product && method_exists($product, 'get_gallery_image_ids')
             ? (array) $product->get_gallery_image_ids() : [];
         $galleryUrls = [];
         foreach ($galleryIds as $gid) {
-            $gid = (int) $gid;
-            $galleryUrls[] = $gid > 0 ? (string) wp_get_attachment_url($gid) : '';
+            $galleryUrls[] = $deLaWeb((int) $gid);
         }
 
         $ops = self::buildImageOps($tpvId, $thumbUrl, $galleryUrls, $alreadySent);
@@ -2989,11 +3015,18 @@ class TPV_Sync_Product_Sync
         require_once ABSPATH . 'wp-admin/includes/file.php';
         require_once ABSPATH . 'wp-admin/includes/image.php';
 
-        // URLs ya adjuntas a este post (para no reimportar)
+        // URLs de la caja ya importadas en este post (un adjunto puede tener
+        // varias: la caja guarda cada subida de la misma foto con otro nombre).
         $existing = [];
         foreach (get_attached_media('image', $postId) as $att) {
-            $existing[] = get_post_meta($att->ID, '_tpv_image_url', true);
+            foreach ((array) get_post_meta($att->ID, '_tpv_image_url', false) as $u) {
+                $existing[] = (string) $u;
+            }
         }
+
+        // Fotos que el producto ya tiene, por contenido: la misma foto con otro
+        // nombre no es una foto nueva (lulubeauty, 19-10-2026: hasta 30 copias).
+        $porContenido = self::adjuntosPorContenido($postId);
 
         $galleryIds = [];
         $mainId     = null;
@@ -3021,18 +3054,27 @@ class TPV_Sync_Product_Sync
             $tmpFile = $this->download_image($url);
             if (!$tmpFile) continue;
 
-            $ext     = pathinfo(parse_url($url, PHP_URL_PATH), PATHINFO_EXTENSION) ?: 'jpg';
-            $suffix  = $img['is_main'] ? 'main' : ('gallery-' . $img['sort_order']);
-            $fileArr = [
-                'name'     => "tpv-{$tpvId}-{$suffix}.{$ext}",
-                'tmp_name' => $tmpFile,
-            ];
+            $huella = (string) md5_file($tmpFile);
+            if (isset($porContenido[$huella])) {
+                // Ya la tiene: se reutiliza y se apunta también esta URL.
+                @unlink($tmpFile);
+                $attId = $porContenido[$huella];
+                add_post_meta($attId, '_tpv_image_url', $url);
+            } else {
+                $ext     = pathinfo(parse_url($url, PHP_URL_PATH), PATHINFO_EXTENSION) ?: 'jpg';
+                $suffix  = $img['is_main'] ? 'main' : ('gallery-' . $img['sort_order']);
+                $fileArr = [
+                    'name'     => "tpv-{$tpvId}-{$suffix}.{$ext}",
+                    'tmp_name' => $tmpFile,
+                ];
 
-            $attId = media_handle_sideload($fileArr, $postId);
-            if (is_wp_error($attId)) continue;
+                $attId = media_handle_sideload($fileArr, $postId);
+                if (is_wp_error($attId)) continue;
 
-            // Guardar URL original para detectar duplicados en el futuro
-            update_post_meta($attId, '_tpv_image_url', $url);
+                // Guardar URL original para detectar duplicados en el futuro
+                update_post_meta($attId, '_tpv_image_url', $url);
+                $porContenido[$huella] = (int) $attId;
+            }
 
             if ($img['is_main']) $mainId = $attId;
             else $galleryIds[] = $attId;
@@ -3041,9 +3083,117 @@ class TPV_Sync_Product_Sync
         if ($mainId) {
             set_post_thumbnail($postId, $mainId);
         }
+        $galleryIds = self::galeriaSinRepetir($galleryIds, (int) ($mainId ?: get_post_thumbnail_id($postId)));
         if (!empty($galleryIds)) {
             update_post_meta($postId, '_product_image_gallery', implode(',', $galleryIds));
         }
+    }
+
+    /** ¿Este adjunto lo trajo la caja? (sync_images le apunta la URL de origen) */
+    public static function vinoDeLaCaja(int $attId): bool
+    {
+        return $attId > 0 && (string) get_post_meta($attId, '_tpv_image_url', true) !== '';
+    }
+
+    /**
+     * Ids de galería sin repetir y sin la destacada, en su orden. Función pura.
+     *
+     * @param int[] $ids
+     * @return int[]
+     */
+    public static function galeriaSinRepetir(array $ids, int $destacada): array
+    {
+        $vistos = $destacada > 0 ? [$destacada => true] : [];
+        $out = [];
+        foreach ($ids as $id) {
+            $id = (int) $id;
+            if ($id <= 0 || isset($vistos[$id])) continue;
+            $vistos[$id] = true;
+            $out[] = $id;
+        }
+        return $out;
+    }
+
+    /**
+     * Fotos del producto por huella de contenido (md5 del fichero) => adjunto.
+     * La destacada va primero: ante dos iguales, gana la que se ve.
+     *
+     * @return array<string,int>
+     */
+    private static function adjuntosPorContenido(int $postId): array
+    {
+        $ids = [(int) get_post_thumbnail_id($postId)];
+        foreach (explode(',', (string) get_post_meta($postId, '_product_image_gallery', true)) as $g) {
+            $ids[] = (int) $g;
+        }
+        foreach (get_attached_media('image', $postId) as $att) {
+            $ids[] = (int) $att->ID;
+        }
+        $mapa = [];
+        foreach ($ids as $id) {
+            $huella = self::huellaAdjunto($id);
+            if ($huella !== '' && !isset($mapa[$huella])) {
+                $mapa[$huella] = $id;
+            }
+        }
+        return $mapa;
+    }
+
+    /** md5 del fichero de un adjunto, o '' si no hay fichero. */
+    private static function huellaAdjunto(int $attId): string
+    {
+        if ($attId <= 0) return '';
+        $f = get_attached_file($attId);
+        return $f && is_file($f) ? (string) md5_file($f) : '';
+    }
+
+    /**
+     * Quita de la galería de cada producto enlazado las fotos repetidas (mismo
+     * contenido) y la que repite la destacada. Lo lanza el cambio de versión
+     * para limpiar las tiendas que ya acumularon copias por el eco de fotos.
+     * Solo toca Woo, no habla con el TPV; los adjuntos no se borran (salen de
+     * la galería, siguen en la biblioteca).
+     *
+     * @return array{revisados:int, curados:int, siguiente:int} siguiente = 0 si no quedan
+     */
+    public function curarGaleriasRepetidas(int $porTanda = 100, int $desde = 0): array
+    {
+        global $wpdb;
+        $ids = array_map('intval', $wpdb->get_col($wpdb->prepare(
+            "SELECT p.ID FROM {$wpdb->posts} p
+               JOIN {$wpdb->postmeta} m ON m.post_id = p.ID AND m.meta_key = %s
+              WHERE p.post_type = 'product' AND p.ID > %d
+              ORDER BY p.ID LIMIT %d",
+            self::TPV_ID_META, $desde, $porTanda)));
+
+        $curados = 0;
+        foreach ($ids as $id) {
+            $galeria = array_values(array_filter(array_map('intval',
+                explode(',', (string) get_post_meta($id, '_product_image_gallery', true)))));
+            if (!$galeria) continue;
+
+            $destacada = (int) get_post_thumbnail_id($id);
+            $vistas = [];
+            $hd = self::huellaAdjunto($destacada);
+            if ($hd !== '') $vistas[$hd] = true;
+
+            $limpia = [];
+            foreach (self::galeriaSinRepetir($galeria, $destacada) as $g) {
+                $h = self::huellaAdjunto($g);
+                if ($h !== '' && isset($vistas[$h])) continue;   // sin fichero: se deja
+                if ($h !== '') $vistas[$h] = true;
+                $limpia[] = $g;
+            }
+            if ($limpia !== $galeria) {
+                update_post_meta($id, '_product_image_gallery', implode(',', $limpia));
+                $curados++;
+            }
+        }
+        return [
+            'revisados' => count($ids),
+            'curados'   => $curados,
+            'siguiente' => count($ids) === $porTanda ? (int) end($ids) : 0,
+        ];
     }
 
     // ─── Variaciones de producto ──────────────────────────────────────────────
@@ -3593,7 +3743,7 @@ class TPV_Sync_Product_Sync
                 $stats['synced']++;
                 if ($dryRun) continue;
                 try {
-                    $r = $this->upsert($p);
+                    $r = $this->upsert($this->detalleTpv($tpvId));
                     if ($r !== 'created' && $r !== 'updated') {
                         $stats['synced']--;
                         $stats['skipped']++;
@@ -3689,7 +3839,7 @@ class TPV_Sync_Product_Sync
 
             if ($decision['catalogo']['accion'] === 'pull') {
                 try {
-                    $this->upsert($p);
+                    $this->upsert($this->detalleTpv($tpvId));
                     $stats['fixed']++;
                 } catch (Throwable $e) {
                     $this->log('error', $tpvId, 'upsert (manda el TPV): ' . $e->getMessage());
