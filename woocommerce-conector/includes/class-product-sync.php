@@ -394,6 +394,7 @@ class TPV_Sync_Product_Sync
         // Meta WooCommerce
         update_post_meta($postId, '_price',         wc_format_decimal($price));
         update_post_meta($postId, '_regular_price', wc_format_decimal($regularPrice));
+        self::marcarPrecioDeCaja($postId, $regularPrice);
         if ($p['special_price'] !== null) {
             update_post_meta($postId, '_sale_price', wc_format_decimal($p['special_price']));
         } elseif (!$conservarRebaja) {
@@ -1291,6 +1292,14 @@ class TPV_Sync_Product_Sync
         $payload += $this->rebajaParaTpv($product, $postId);
         $payload += $this->categorias->paraPayload($postId, (int) get_post_meta($postId, self::TPV_ID_META, true) <= 0);
 
+        // Un producto ya enlazado cuyo precio puso la caja va sin precio, si la
+        // API respeta en el volcado lo que no viene (si no, lo pondría a 0).
+        if ((int) get_post_meta($postId, self::TPV_ID_META, true) > 0
+            && self::precioWebEsDeCaja($product)
+            && $this->api->tieneCapacidad('bulk_keeps_omitted')) {
+            unset($payload['price']);
+        }
+
         if ($product->is_type('variable')) {
             $options = $this->build_options_for_tpv($product);
             if (!empty($options)) {
@@ -1717,6 +1726,48 @@ class TPV_Sync_Product_Sync
     /** Cada cuánto se revisan los precios (una vuelta entera). */
     const PVP_CADA_SEG = 6 * 3600;
 
+    /** Precio normal que la caja escribió en la web por última vez. */
+    const PVP_DE_CAJA_META = '_tpv_pvp_de_caja';
+
+    /** Apunta que este precio normal de Woo lo ha puesto la caja. */
+    private static function marcarPrecioDeCaja(int $postId, float $precio): void
+    {
+        update_post_meta($postId, self::PVP_DE_CAJA_META, wc_format_decimal($precio));
+    }
+
+    /**
+     * ¿El precio normal que tiene Woo es el que puso la caja (nadie lo ha
+     * cambiado en Woo desde entonces)? Sin marca (tiendas de antes) no se
+     * sabe: se trata como de la web, que es lo que se hacía.
+     */
+    private static function precioEsDeCaja(int $postId, string $precioWoo): bool
+    {
+        $deCaja = (string) get_post_meta($postId, self::PVP_DE_CAJA_META, true);
+        return $deCaja !== '' && $precioWoo !== ''
+            && abs((float) $deCaja - (float) $precioWoo) < 0.005;
+    }
+
+    /**
+     * ¿El precio con el que este producto iría a la caja es el que la caja le
+     * puso a la web? Simple: su precio normal. Variable: todas sus tallas.
+     */
+    private static function precioWebEsDeCaja($product): bool
+    {
+        if (!is_object($product) || !method_exists($product, 'get_id')) {
+            return false;
+        }
+        if (method_exists($product, 'is_type') && $product->is_type('variable')) {
+            $hijos = method_exists($product, 'get_children') ? (array) $product->get_children() : [];
+            foreach ($hijos as $varId) {
+                if (!self::precioEsDeCaja((int) $varId, (string) get_post_meta((int) $varId, '_regular_price', true))) {
+                    return false;
+                }
+            }
+            return $hijos !== [];
+        }
+        return self::precioEsDeCaja((int) $product->get_id(), (string) $product->get_regular_price());
+    }
+
     private static function cuadreVacio(): array
     {
         return ['con_pvp' => false, 'revisados' => 0, 'corregidos' => 0, 'atascados' => 0,
@@ -1778,6 +1829,14 @@ class TPV_Sync_Product_Sync
 
         if (TPV_Sync_Precio_Pvp::cuadra($web, $webRebaja, $tpvPrecio, $tpvRebaja)) {
             delete_post_meta($postId, '_tpv_pvp_corregido');
+            return;
+        }
+        // El precio de la web lo puso la caja y nadie lo ha tocado en Woo: no
+        // es la palabra de la web, es un eco viejo. La que cambió es la caja
+        // (y su aviso no llegó): se trae a la web en vez de deshacerla.
+        if (self::precioEsDeCaja($postId, (string) $product->get_regular_price())) {
+            $this->update_from_tpv($tpvId);
+            $this->log('ok', $tpvId, "Precio traído de la caja: la web tenía $web, puesto por la caja, y la caja cobra $tpvPrecio (post=$postId)");
             return;
         }
         $firma = $web . '|' . ($webRebaja ?? '');
@@ -2132,8 +2191,14 @@ class TPV_Sync_Product_Sync
         }
 
         if ($tpvId > 0) {
-            // Edit
-            $r = $this->api->patch("/products/$tpvId", $payload);
+            // Edit. Un precio que la web solo tiene porque se lo puso la caja
+            // no vuelve a la caja: la caja pudo cambiarlo después (lulubeauty,
+            // 19-10). Lo que no viene en un PATCH, la API no lo toca.
+            $parche = $payload;
+            if (self::precioWebEsDeCaja($product)) {
+                unset($parche['price']);
+            }
+            $r = $this->api->patch("/products/$tpvId", $parche);
             // Si el TPV ya no tiene este producto (404 → type contiene
             // "not_found"), el meta local apunta a un mapeo huérfano: el TPV
             // se reseteó, el producto se borró manualmente, o el cliente
@@ -3251,11 +3316,20 @@ class TPV_Sync_Product_Sync
 
                 $quantity = $this->stockParaWoo($varId, (float) $quantity);
                 $this->escribirStockVariacion($varId, $quantity);
-                // El precio solo se escribe en las nuevas o cuando el TPV manda
-                // el catálogo: una rebaja puesta en Woo no se pisa por un stock.
-                if ($nueva || get_option('tpv_sync_principal', '') === 'tpv') {
-                    update_post_meta($varId, '_price',         wc_format_decimal($varPrice));
+                // El precio se escribe en las nuevas, cuando el TPV manda el
+                // catálogo, o cuando la talla conserva el precio que le puso la
+                // caja (nadie lo ha cambiado en Woo). Sin esto un cambio de
+                // precio en la caja no llegaba nunca a las tallas y el siguiente
+                // envío desde Woo devolvía a la caja el precio viejo
+                // (lulubeauty, 19-10). Un precio puesto en Woo no se pisa, y una
+                // rebaja activa de la talla sigue siendo lo que se cobra.
+                if ($nueva || get_option('tpv_sync_principal', '') === 'tpv'
+                    || self::precioEsDeCaja($varId, (string) get_post_meta($varId, '_regular_price', true))) {
+                    if ((string) get_post_meta($varId, '_sale_price', true) === '') {
+                        update_post_meta($varId, '_price', wc_format_decimal($varPrice));
+                    }
                     update_post_meta($varId, '_regular_price', wc_format_decimal($varPrice));
+                    self::marcarPrecioDeCaja($varId, (float) $varPrice);
                 }
             }
         }
@@ -3545,6 +3619,14 @@ class TPV_Sync_Product_Sync
                 // decidir() no reconcilia lo que el TPV vende a peso (stock en kg).
                 'sold_by_weight' => !empty($p['sold_by_weight']),
             ];
+            // El precio no se compara: (a) en un variable, porque el padre de
+            // Woo no tiene (vacío = 0) y siempre «discrepaba», empujando el
+            // producto en cada reconciliación; los precios van en las tallas.
+            // (b) si el de Woo lo puso la caja: no es la palabra de la web
+            // (lulubeauty, 19-10); la revisión de precios lo trae de la caja.
+            if ($wcProduct && ($wcProduct->is_type('variable') || self::precioWebEsDeCaja($wcProduct))) {
+                $fotoWc['price'] = $fotoTpv['price'];
+            }
 
             // Si uno de los dos lados no cuenta stock, no hay stock que
             // reconciliar: su número es ruido (el _stock que Woo guarda de

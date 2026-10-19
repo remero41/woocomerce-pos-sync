@@ -220,6 +220,49 @@ function run_pvp_tests(WooTestRunner $t): void
         $t->assertEquals(9.92, (float) (pvp_guardar(10)['body']['price'] ?? -1));
     });
 
+    $t->suite('PVP — un precio que puso la caja no vuelve a la caja (lulubeauty 19-10)');
+
+    // La caja escribió 15,72 en la web; la clienta lo corrigió en la caja a
+    // 12,99. Guardar el producto en Woo por otro motivo (un nombre, una foto),
+    // «Enviar a TPV» o reconciliar devolvía el 15,72 a la caja.
+    $t->test('guardar en Woo un producto con el precio que puso la caja: el PATCH no lleva precio', function ($t) {
+        pvp_tienda(['yes', 'yes', 21], new ProductoPvpFalso(10, '15.72'), ['price_gross_write'],
+            ['_tpv_pvp_de_caja' => '15.72']);
+        $p = pvp_guardar(10);
+        $t->assert($p !== null, 'el resto del producto sí viaja');
+        $t->assert(!array_key_exists('price', $p['body'] ?? []), 'antes: price 15,72 ⇒ deshacía la corrección de la caja');
+    });
+
+    $t->test('si el precio se cambió en Woo, viaja', function ($t) {
+        pvp_tienda(['yes', 'yes', 21], new ProductoPvpFalso(10, '12.99'), ['price_gross_write'],
+            ['_tpv_pvp_de_caja' => '15.72']);
+        $t->assertEquals(12.99, (float) (pvp_guardar(10)['body']['price'] ?? -1));
+    });
+
+    $t->test('volcado en bloque con una API que respeta lo que no viene: sin precio', function ($t) {
+        pvp_tienda(['yes', 'yes', 21], new ProductoPvpFalso(10, '15.72'), ['price_gross_write', 'bulk_keeps_omitted'],
+            ['_tpv_pvp_de_caja' => '15.72']);
+        (new TPV_Sync_Product_Sync(new TPV_Sync_API_Client()))->push_wc_products_bulk([10]);
+        $item = pvp_ultima('POST', '/products/bulk')['body']['items'][0] ?? [];
+        $t->assert($item !== [] && !array_key_exists('price', $item), 'el item viaja sin price');
+    });
+
+    $t->test('volcado en bloque con una API vieja: el precio viaja (sin él lo pondría a 0)', function ($t) {
+        pvp_tienda(['yes', 'yes', 21], new ProductoPvpFalso(10, '15.72'), ['price_gross_write'],
+            ['_tpv_pvp_de_caja' => '15.72']);
+        (new TPV_Sync_Product_Sync(new TPV_Sync_API_Client()))->push_wc_products_bulk([10]);
+        $item = pvp_ultima('POST', '/products/bulk')['body']['items'][0] ?? [];
+        $t->assertEquals(15.72, (float) ($item['price'] ?? -1));
+    });
+
+    $t->test('alta de un producto nuevo: el precio viaja siempre', function ($t) {
+        pvp_tienda(['yes', 'yes', 21], new ProductoPvpFalso(10, '15.72'), ['price_gross_write'],
+            ['_tpv_pvp_de_caja' => '15.72']);
+        unset($GLOBALS['__wp_meta'][10]['_tpv_product_id']);
+        (new TPV_Sync_Product_Sync(new TPV_Sync_API_Client()))->push_wc_product_to_tpv(10);
+        $t->assertEquals(15.72, (float) (pvp_ultima('POST', '/products')['body']['price'] ?? -1));
+    });
+
     $t->suite('PVP — las rebajas de la tienda llegan al TPV (D1)');
 
     $t->test('producto rebajado: la rebaja viaja como special_price, en PVP', function ($t) {

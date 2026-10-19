@@ -110,3 +110,20 @@ Además: una variante con precio propio; una rebaja con y sin fechas; ida y vuel
 - **D1 — Rebajas de Woo al TPV** (P3): **SÍ** (usuario, 30-09). Implementado sin fechas: Woo avisa al terminar la rebaja programada (guardado) y viaja el null.
 - **D2 — La web y la caja no cuadran** (P4): **nada de botón** (el usuario: «el cliente no sabe y la puede liar»). La corrección es automática y segura porque la referencia es lo que Woo COBRA. Frenos: solo con la configuración coherente, un freno de cambios masivos que avisa al CP, y se puede deshacer. A la clienta, solo avisos de qué cambiar en su Woo.
 - **D3 — Tiendas ya volcadas con la regla vieja**: **SÍ**, corrección automática al actualizar, con los frenos de D2 (fase 2).
+
+## 6. Procedencia del precio (19-10-2026, lulubeauty)
+
+**Qué pasó.** La clienta corrigió precios en la caja (ej. 12,99 con IVA) y la web se los deshizo. Cadena: el plugin ≤2.9.0 mandó a la caja PVP como base (12,99 → caja 15,72); el eco TPV→Woo escribió 15,72 en la web; al subir a 2.14 la revisión de 6 h («la web manda») tomó ese 15,72 como palabra de la web y lo devolvió a la caja (base 12,9917) encima de sus correcciones. Las tallas no recibían los cambios de precio de la caja con «manda la tienda», y la reconciliación empujaba siempre los variables (precio del padre vacío = 0).
+
+**Regla nueva.** Cada precio normal que la caja escribe en Woo queda marcado (`_tpv_pvp_de_caja`, en el producto y en cada talla). Mientras Woo conserve ese mismo precio, **no es la palabra de la web**:
+
+- La revisión de 6 h no corrige la caja con él: trae el precio de la caja a la web (`update_from_tpv`).
+- Guardar en Woo, «Enviar a TPV» y reconciliar no lo reenvían: el PATCH va sin `price` (la API no toca lo que no viene); el volcado en bloque solo lo omite si la API anuncia `bulk_keeps_omitted` (una API vieja lo pondría a 0).
+- Las tallas reciben el precio nuevo de la caja si conservan el que ella les puso; un precio puesto en Woo se respeta, y una rebaja activa sigue siendo lo que se cobra.
+- La reconciliación no compara el precio de un variable (va en las tallas) ni uno puesto por la caja.
+
+Sin marca (productos de antes) todo sigue como hasta ahora: manda la web. Si alguien cambia el precio en Woo, la marca deja de coincidir y vuelve a mandar la web.
+
+**API (`bulk_keeps_omitted`).** El UPDATE de `/products/bulk` ya no pone a 0 `price` ni `tax_class_id` cuando el item no los trae (como PATCH). Un conector sin mapeo de clases dejaba los productos «Sin impuestos».
+
+**Residual.** Un producto enlazado que se borró en la caja y vuelve por el volcado en bloque con el precio omitido nacería a 0 €; el guardado individual (PATCH → 404 → alta) sí manda el precio. Los datos ya desviados de lulubeauty NO se arreglan solos: no tienen marca.
