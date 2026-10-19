@@ -1,3 +1,29 @@
+## 2.17.0
+
+### Las fotos ya no se repiten en la tienda ni en el TPV
+
+- **Cada foto aparece una sola vez.** Al pasar un producto del TPV a la
+  tienda y de vuelta, la tienda tomaba como nuevas las fotos que le había
+  dado el propio TPV y las volvía a subir. Cada vuelta dejaba una copia más
+  en los dos lados (hasta 30 fotos donde había 5). Ahora una foto que vino
+  del TPV no vuelve a subirse, y la misma foto con otro nombre no se guarda
+  otra vez.
+
+- **Las galerías se limpian solas.** Al actualizar a esta versión, la tienda
+  quita de cada galería las fotos repetidas y la que repite la foto
+  principal, poco a poco y sin tocar el TPV. Las fotos quitadas siguen en la
+  biblioteca de medios.
+
+### Reconciliar ya no borra descripciones ni tallas
+
+- **Con «manda el TPV», reconciliar dejaba sin descripción los productos de
+  la tienda** que tenían alguna diferencia con el TPV, y un producto con
+  tallas podía quedarse sin ellas. Ahora reconciliar trae el producto
+  completo del TPV antes de tocarlo; si no puede, lo deja como estaba.
+
+- Un aviso del TPV sin descripción ya no borra la de la tienda. Una
+  descripción vaciada a propósito en el TPV sí se vacía en la tienda.
+
 ## 2.16.0
 
 ### Un precio corregido en el TPV ya no vuelve al precio viejo de la tienda
