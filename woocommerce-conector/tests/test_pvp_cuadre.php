@@ -219,6 +219,45 @@ function run_pvp_cuadre_tests(WooTestRunner $t): void
         $t->assertEquals([], cuadre_patches());
     });
 
+    $t->suite('PVP fase 2 — de dónde viene el precio de la web (lulubeauty 19-10)');
+
+    // lulubeauty: el TPV escribió 15,72 en la web (eco de una base mal
+    // guardada). La clienta lo corrigió en la caja a 12,99, el aviso a Woo no
+    // llegó y la revisión de 6 h tomó el 15,72 de la web como «lo que la web
+    // cobra» y lo devolvió a la caja: deshizo su corrección. Un precio que la
+    // web solo tiene porque se lo puso la caja no es la palabra de la web.
+    $t->test('el precio de la web lo puso la caja y la caja cambió después: NO se pisa la caja', function ($t) {
+        cuadre_tienda(['yes', 'yes', 21], [7071 => new ProductoPvpFalso(7071, '15.72')], [900 => [12.99, null]]);
+        $GLOBALS['__wp_meta'][7071]['_tpv_pvp_de_caja'] = '15.72';
+        $s = cuadre_pasada();
+        $t->assertEquals([], cuadre_patches(), 'antes: PATCH price 15,72 ⇒ la caja volvía a 12,9917 de base');
+        $t->assertEquals(0, $s['pvp_corregidos'] ?? null);
+    });
+
+    $t->test('…y la web recibe el precio de la caja', function ($t) {
+        cuadre_tienda(['yes', 'yes', 21], [7071 => new ProductoPvpFalso(7071, '15.72')], [900 => [12.99, null]]);
+        $GLOBALS['__wp_meta'][7071]['_tpv_pvp_de_caja'] = '15.72';
+        cuadre_pasada();
+        $gets = array_filter($GLOBALS['__http']['peticiones'],
+            fn ($p) => $p['metodo'] === 'GET' && str_ends_with((string) parse_url($p['url'], PHP_URL_PATH), '/products/900'));
+        $t->assertEquals(1, count($gets), 'se lee el producto del TPV (una vez) para escribirlo en Woo');
+    });
+
+    $t->test('el precio lo cambió alguien en Woo después de la caja: manda la web', function ($t) {
+        cuadre_tienda(['yes', 'yes', 21], [7071 => new ProductoPvpFalso(7071, '9.92')], [900 => [12.00, null]]);
+        $GLOBALS['__wp_meta'][7071]['_tpv_pvp_de_caja'] = '12.00';
+        cuadre_pasada();
+        $p = cuadre_patches();
+        $t->assertEquals(1, count($p));
+        $t->assertEquals(9.92, $p[0]['body']['price'] ?? null);
+    });
+
+    $t->test('sin marca de procedencia (tiendas de antes): manda la web, como hasta ahora', function ($t) {
+        cuadre_tienda(['yes', 'yes', 21], [7071 => new ProductoPvpFalso(7071, '9.92')], [900 => [12.00, null]]);
+        cuadre_pasada();
+        $t->assertEquals(1, count(cuadre_patches()));
+    });
+
     $t->suite('PVP fase 2 — sin bucles');
 
     $t->test('si tras corregir sigue sin cuadrar, no se repite en cada pasada', function ($t) {
