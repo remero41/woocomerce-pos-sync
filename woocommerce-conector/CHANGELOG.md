@@ -1,3 +1,36 @@
+## 2.16.0
+
+### Un precio corregido en el TPV ya no vuelve al precio viejo de la tienda
+
+- **Si cambias un precio en el TPV, la tienda ya no lo deshace.** Antes, la
+  revisión automática de precios (cada 6 horas) tomaba el precio de la tienda
+  como el bueno aunque ese precio lo hubiera puesto el propio TPV tiempo
+  atrás, y lo devolvía a la caja. Ahora la tienda sabe qué precios le puso el
+  TPV: si nadie los ha cambiado en la tienda, gana el precio del TPV y se
+  copia a la tienda.
+
+- **Guardar un producto en la tienda, «Enviar a TPV» o reconciliar ya no
+  reenvían al TPV un precio que vino del TPV.** El resto del producto (nombre,
+  fotos, categorías…) se envía igual. Si cambias el precio en la tienda, ese
+  precio sí manda, como siempre.
+
+- **Las tallas reciben los cambios de precio del TPV.** Antes solo se ponía
+  precio a las tallas nuevas. Una talla con precio puesto en la tienda, o con
+  una rebaja activa, se respeta.
+
+- **Reconciliar ya no reenvía cada vez los productos con tallas.** Se
+  comparaba el precio del producto principal, que en la tienda está vacío.
+
+- Al volcar en bloque, el precio solo se deja fuera con la API del TPV que lo
+  respeta (octubre de 2026). Con una API anterior se envía como siempre.
+
+### Cambiar el código principal en el TPV ya no deja el código viejo en la tienda
+
+- Si en el TPV el código principal de un producto pasaba de un EAN a una
+  referencia, la tienda guardaba la referencia nueva pero se quedaba con el
+  EAN viejo, y el siguiente guardado en la tienda lo devolvía al TPV. Ahora
+  se borra; un código puesto a mano en la tienda se respeta.
+
 ## 2.15.0
 
 ### Guardar un producto en la tienda ya no toca los códigos de barras de las tallas
