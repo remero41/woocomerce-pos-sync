@@ -76,6 +76,9 @@ if (get_option('tpv_sync_version_instalada') !== TPV_SYNC_VERSION) {
     // Y los padres variables «Sin existencias» con tallas en stock que dejó la
     // versión anterior (lulubeauty, 17-10-2026): se curan sin esperar a una venta.
     wp_schedule_single_event(time() + 2 * MINUTE_IN_SECONDS, 'tpv_sync_curar_padres_variables', [0]);
+    // Y las galerías llenas de copias que dejó el eco de fotos con la caja
+    // (lulubeauty, 19-10-2026): fuera las repetidas, sin hablar con el TPV.
+    wp_schedule_single_event(time() + 3 * MINUTE_IN_SECONDS, 'tpv_sync_curar_galerias', [0]);
 }
 
 (new TPV_Sync_Updater(
@@ -492,6 +495,15 @@ add_action('tpv_sync_curar_padres_variables', static function ($desde = 0): void
     $r = TPV_Sync::instance()->products->curarPadresVariables(100, (int) $desde);
     if ($r['siguiente'] > 0) {
         wp_schedule_single_event(time() + 10, 'tpv_sync_curar_padres_variables', [$r['siguiente']]);
+    }
+}, 10, 1);
+// ─── Cura de galerías con fotos repetidas, por tandas ────────────────────────
+// Ver TPV_Sync_Product_Sync::curarGaleriasRepetidas. Solo toca Woo.
+add_action('tpv_sync_curar_galerias', static function ($desde = 0): void {
+    if (!class_exists('TPV_Sync')) return;
+    $r = TPV_Sync::instance()->products->curarGaleriasRepetidas(100, (int) $desde);
+    if ($r['siguiente'] > 0) {
+        wp_schedule_single_event(time() + 10, 'tpv_sync_curar_galerias', [$r['siguiente']]);
     }
 }, 10, 1);
 // Compat: un evento ya programado por una versión anterior no debe volcar el catálogo.

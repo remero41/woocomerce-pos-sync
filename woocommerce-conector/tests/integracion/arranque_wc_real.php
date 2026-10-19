@@ -80,8 +80,37 @@ integracion_filtro('pre_transient_tpv_sync_token', static function () {
 integracion_filtro('pre_transient_tpv_sync_api_capacidades', static fn () => false);
 integracion_filtro('pre_set_transient_tpv_sync_api_capacidades', static fn () => false);
 
+/**
+ * JPEG de verdad para una foto del TPV (media_handle_sideload valida que lo sea).
+ * $GLOBALS['__tpv_imagenes'][url] = 'clave' fuerza el contenido: dos URLs con la
+ * misma clave son la MISMA foto con nombres distintos (lo que hace la API al
+ * guardar cada subida con un nombre aleatorio).
+ */
+function integracion_jpeg(string $url): string
+{
+    $clave = $GLOBALS['__tpv_imagenes'][$url] ?? $url;
+    $h = md5($clave);
+    $im = imagecreatetruecolor(8, 8);
+    imagefill($im, 0, 0, imagecolorallocate($im, hexdec(substr($h, 0, 2)), hexdec(substr($h, 2, 2)), hexdec(substr($h, 4, 2))));
+    imagesetpixel($im, 1, 1, imagecolorallocate($im, hexdec(substr($h, 6, 2)), hexdec(substr($h, 8, 2)), hexdec(substr($h, 10, 2))));
+    ob_start();
+    imagejpeg($im, null, 100);
+    return (string) ob_get_clean();
+}
+$GLOBALS['__tpv_imagenes'] = [];
+
 integracion_filtro('pre_http_request', static function ($pre, $args, $url) {
     $metodo = strtoupper((string) ($args['method'] ?? 'GET'));
+    if ($metodo === 'GET' && preg_match('#^https://tpv\.prueba\.invalid/image/#', (string) $url)) {
+        $GLOBALS['__http'][] = ['metodo' => 'GET', 'ruta' => (string) $url, 'cuerpo' => null];
+        return [
+            'headers'  => ['content-type' => 'image/jpeg'],
+            'body'     => integracion_jpeg((string) $url),
+            'response' => ['code' => 200, 'message' => 'OK'],
+            'cookies'  => [],
+            'filename' => null,
+        ];
+    }
     $ruta   = (string) parse_url((string) $url, PHP_URL_PATH);
     $ruta   = preg_replace('#^/api/v1#', '', $ruta);
     $cuerpo = isset($args['body']) && is_string($args['body']) ? json_decode($args['body'], true) : null;
