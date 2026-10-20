@@ -1189,10 +1189,10 @@ class TPV_Sync_Product_Sync
         // 'errors' no entraba aqui y el bulk se daba por bueno sin fallback.
         if (!TPV_Sync_API_Client::fueBien($resp)) {
             // Bulk falló entero → fallback singular para no perder catálogo.
-            $err0 = $resp['errors'][0] ?? [];
-            $msg = ($err0['field'] ?? '') !== ''
-                ? ($err0['field'] . ': ' . ($err0['message'] ?? 'unknown'))
-                : ($err0['message'] ?? $resp['error'] ?? 'unknown');
+            // El motivo, venga en errors[] o en problem+json (un 403/429/5xx).
+            $err0   = $resp['errors'][0] ?? [];
+            $motivo = TPV_Sync_API_Client::mensajeDeError((int) ($resp['_status'] ?? 0), (array) $resp);
+            $msg    = ($err0['field'] ?? '') !== '' ? ($err0['field'] . ': ' . $motivo) : $motivo;
             $this->log('error', 0, "POST /products/bulk falló: $msg — fallback a singular");
             foreach ($bulkPostIds as $pid) {
                 $ok = $this->push_wc_product_to_tpv($pid);

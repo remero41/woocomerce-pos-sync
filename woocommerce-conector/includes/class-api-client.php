@@ -664,12 +664,24 @@ class TPV_Sync_API_Client
      */
     public static function mensajeDeError(int $code, array $body): string
     {
-        $msg = $body['errors'][0]['message'] ?? $body['detail'] ?? $body['title'] ?? null;
-        if (!is_string($msg) || trim($msg) === '') {
+        // El primero con texto: un message vacío no debe tapar al detail. 'error'
+        // como texto es el fallo de transporte (wp_error, sin respuesta HTTP).
+        $msg = null;
+        foreach ([$body['errors'][0]['message'] ?? null, $body['detail'] ?? null,
+                  $body['title'] ?? null, $body['error'] ?? null] as $c) {
+            if (is_string($c) && trim($c) !== '') { $msg = $c; break; }
+        }
+        if ($msg === null) {
             return "HTTP $code";
         }
         $req = $body['request_id'] ?? $body['errors'][0]['request_id'] ?? null;
         return is_string($req) && $req !== '' ? "$msg [request_id $req]" : $msg;
+    }
+
+    /** Código del error de la API: errors[0].error, o `code` en problem+json. Pura. */
+    public static function codigoDeError(array $body): string
+    {
+        return (string) ($body['errors'][0]['error'] ?? $body['code'] ?? '');
     }
 
     /**

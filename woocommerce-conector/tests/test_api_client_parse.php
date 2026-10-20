@@ -17,6 +17,18 @@ declare(strict_types=1);
 
 require_once dirname(__DIR__) . '/includes/class-api-client.php';
 
+/** Línea de class-api-client.php donde mensajeDeError() lee errors[0].message (la única permitida). */
+function self_linea_mensaje(): int
+{
+    $src = file(dirname(__DIR__) . '/includes/class-api-client.php');
+    $dentro = false;
+    foreach ($src as $n => $l) {
+        if (str_contains($l, 'function mensajeDeError(')) { $dentro = true; }
+        if ($dentro && str_contains($l, "['errors'][0]['message']")) { return $n + 1; }
+    }
+    return -1;
+}
+
 function run_api_client_parse_tests(WooTestRunner $t): void
 {
     $t->suite('BUG-A — API client: el status manda');
@@ -136,6 +148,59 @@ function run_api_client_parse_tests(WooTestRunner $t): void
 
     $t->test('cuerpo vacío (HTML de un proxy) ⇒ «HTTP <code>»', function ($t) {
         $t->assert(TPV_Sync_API_Client::mensajeDeError(502, []) === 'HTTP 502', 'sin cuerpo útil queda el status');
+    });
+
+    // Hallazgos del refutador (20-10): un message vacío tapaba al detail, y el
+    // fallo de transporte (wp_error) solo trae 'error' como texto.
+    $t->test('errors[0].message vacío no tapa el detail', function ($t) {
+        $m = TPV_Sync_API_Client::mensajeDeError(422, ['errors' => [['message' => '']], 'detail' => 'price must be numeric.']);
+        $t->assert(str_contains($m, 'price must be numeric.'), $m);
+    });
+
+    $t->test('fallo de transporte (sin HTTP) ⇒ el texto de error', function ($t) {
+        $m = TPV_Sync_API_Client::mensajeDeError(0, ['error' => 'cURL error 28: timeout', '_status' => 0, '_ok' => false]);
+        $t->assert(str_contains($m, 'cURL error 28'), $m);
+    });
+
+    // El pedido web que se queda sin stock en caja se pone «en espera» al ver el
+    // código insufficient_stock: en problem+json el código va en `code`.
+    $t->test('codigoDeError lee errors[0].error y, en problem+json, code', function ($t) {
+        $t->assert(TPV_Sync_API_Client::codigoDeError(['errors' => [['error' => 'insufficient_stock']]]) === 'insufficient_stock', 'errors[]');
+        $t->assert(TPV_Sync_API_Client::codigoDeError(['type' => 'x/insufficient_stock', 'code' => 'insufficient_stock', 'detail' => 'Stock insuficiente']) === 'insufficient_stock', 'problem+json');
+        $t->assert(TPV_Sync_API_Client::codigoDeError([]) === '', 'vacío');
+    });
+
+    $t->test('el alta de pedido detecta insufficient_stock por codigoDeError (cableado)', function ($t) {
+        $src = (string) file_get_contents(dirname(__DIR__) . '/includes/class-order-sync.php');
+        $t->assert(str_contains($src, '$code  = TPV_Sync_API_Client::codigoDeError($result);'), 'class-order-sync debe leer el código con codigoDeError');
+    });
+
+    $t->test('ningún lector del plugin se salta mensajeDeError (cableado en includes/)', function ($t) {
+        $viejos = [];
+        foreach (glob(dirname(__DIR__) . '/includes/*.php') as $f) {
+            foreach (file($f) as $n => $linea) {
+                if (str_contains($linea, "['errors'][0]['message'] ??") && !str_contains($linea, 'function mensajeDeError')
+                    && basename($f) . ':' . ($n + 1) !== 'class-api-client.php:' . self_linea_mensaje()) {
+                    $viejos[] = basename($f) . ':' . ($n + 1);
+                }
+            }
+        }
+        $t->assert($viejos === [], 'lectores que ignoran problem+json: ' . implode(', ', $viejos));
+    });
+
+    // 2.ª ronda del refutador: el bulk leía $err0['message'] con otro patrón.
+    // Fuera de class-api-client.php nadie lee el `message` del error a mano.
+    $t->test('nadie fuera del cliente lee el message del error a mano', function ($t) {
+        $viejos = [];
+        foreach (glob(dirname(__DIR__) . '/includes/*.php') as $f) {
+            if (basename($f) === 'class-api-client.php') continue;
+            foreach (file($f) as $n => $linea) {
+                if (preg_match("/\\['errors'\\]\\[0\\]\\['message'\\]|\\\$err0\\['message'\\]/", $linea)) {
+                    $viejos[] = basename($f) . ':' . ($n + 1);
+                }
+            }
+        }
+        $t->assert($viejos === [], 'lecturas a mano del message: ' . implode(', ', $viejos));
     });
 
     $t->test('parse() usa mensajeDeError (cableado)', function ($t) {

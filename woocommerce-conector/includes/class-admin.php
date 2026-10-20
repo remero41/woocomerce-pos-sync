@@ -3775,7 +3775,7 @@ class TPV_Sync_Admin
                     'sugerir_reconciliar' => $sugerirReconciliar,
                 ]);
             } else {
-                wp_send_json_error($result['errors'][0]['message'] ?? wp_json_encode($result));
+                wp_send_json_error(TPV_Sync_API_Client::mensajeDeError((int) ($result['_status'] ?? 0), (array) $result));
             }
         } catch (Throwable $e) {
             wp_send_json_error($e->getMessage());
