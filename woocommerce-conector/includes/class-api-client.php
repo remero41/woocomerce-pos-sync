@@ -612,12 +612,12 @@ class TPV_Sync_API_Client
 
         if ($code >= 500) {
             // 5xx = error de servidor → breaker failure (backend inestable).
-            $msg = $body['errors'][0]['message'] ?? "HTTP $code";
+            $msg = self::mensajeDeError($code, $body);
             $this->log('error', 'api', 0, "$method $path → $code: $msg");
             if ($this->breaker) $this->breaker->recordFailure();
         } elseif ($code >= 400) {
             // 4xx = error del cliente, pero el backend responde → breaker success.
-            $msg = $body['errors'][0]['message'] ?? "HTTP $code";
+            $msg = self::mensajeDeError($code, $body);
             $this->log('error', 'api', 0, "$method $path → $code: $msg");
             if ($this->breaker) $this->breaker->recordSuccess();
 
@@ -651,6 +651,25 @@ class TPV_Sync_API_Client
         }
 
         return self::decide($code, $body);
+    }
+
+    /**
+     * El motivo de un error, para el Registro. La API responde en problem+json
+     * (este cliente lo negocia): el motivo va en `detail`/`title`, y en las de
+     * validación en errors[0].message. Antes solo se leía errors[0].message y el
+     * Registro decía «400: HTTP 400» sin más (modasanmar, 20-10-2026). El
+     * request_id permite encontrar la línea en el log de la API.
+     *
+     * Pura a propósito, como decide(): se prueba sin WordPress ni red.
+     */
+    public static function mensajeDeError(int $code, array $body): string
+    {
+        $msg = $body['errors'][0]['message'] ?? $body['detail'] ?? $body['title'] ?? null;
+        if (!is_string($msg) || trim($msg) === '') {
+            return "HTTP $code";
+        }
+        $req = $body['request_id'] ?? $body['errors'][0]['request_id'] ?? null;
+        return is_string($req) && $req !== '' ? "$msg [request_id $req]" : $msg;
     }
 
     /**
