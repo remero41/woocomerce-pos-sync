@@ -100,6 +100,52 @@ function run_api_client_parse_tests(WooTestRunner $t): void
         $t->assert(TPV_Sync_API_Client::fueBien('') === false, 'string vacio no es exito');
     });
 
+    // ── El Registro dice POR QUÉ falló (modasanmar, 20-10-2026) ──────────────
+    // parse() solo leía errors[0].message, pero la API responde en problem+json
+    // (lo negocia este cliente): el motivo viene en `detail`. El Registro decía
+    // «GET /products → 400: HTTP 400» y el error real (api_cache legacy) no se veía.
+    $t->suite('Registro — el mensaje de error dice el motivo');
+
+    $t->test('problem+json ⇒ el detail, con su request_id para cruzarlo con el log de la API', function ($t) {
+        $m = TPV_Sync_API_Client::mensajeDeError(500, [
+            'type' => 'https://catinfog.com/api/v1/errors/internal_error', 'title' => 'An unexpected error occurred.',
+            'status' => 500, 'detail' => 'An unexpected error occurred.', 'request_id' => 'c1d214f17a7a4558',
+            'code' => 'internal_error',
+        ]);
+        $t->assert(str_contains($m, 'An unexpected error occurred.'), 'debe llevar el detail: ' . $m);
+        $t->assert(str_contains($m, 'c1d214f17a7a4558'), 'debe llevar el request_id: ' . $m);
+    });
+
+    $t->test('problem+json sin detail ⇒ el title', function ($t) {
+        $m = TPV_Sync_API_Client::mensajeDeError(404, ['title' => 'Recurso no encontrado.', 'status' => 404]);
+        $t->assert(str_contains($m, 'Recurso no encontrado.'), $m);
+    });
+
+    $t->test('formato errors[] ⇒ errors[0].message (como hasta ahora)', function ($t) {
+        $m = TPV_Sync_API_Client::mensajeDeError(422, ['errors' => [['error' => 'validation_error', 'message' => 'name is required.']]]);
+        $t->assert(str_contains($m, 'name is required.'), $m);
+    });
+
+    $t->test('problem+json de validación ⇒ el campo que falla, no el genérico', function ($t) {
+        $m = TPV_Sync_API_Client::mensajeDeError(422, [
+            'title' => 'Request validation failed', 'detail' => 'One or more fields failed validation',
+            'errors' => [['field' => 'price', 'message' => 'price must be numeric.']],
+        ]);
+        $t->assert(str_contains($m, 'price must be numeric.'), $m);
+    });
+
+    $t->test('cuerpo vacío (HTML de un proxy) ⇒ «HTTP <code>»', function ($t) {
+        $t->assert(TPV_Sync_API_Client::mensajeDeError(502, []) === 'HTTP 502', 'sin cuerpo útil queda el status');
+    });
+
+    $t->test('parse() usa mensajeDeError (cableado)', function ($t) {
+        $src = (string) file_get_contents(dirname(__DIR__) . '/includes/class-api-client.php');
+        $t->assert(substr_count($src, 'self::mensajeDeError($code, $body)') >= 2,
+            'los dos registros de error de parse() (4xx y 5xx) deben usar mensajeDeError');
+        $t->assert(!str_contains($src, '$body[\'errors\'][0][\'message\'] ?? "HTTP $code"'),
+            'no debe quedar la lectura antigua que ignoraba problem+json');
+    });
+
     $t->test('_ok=false MANDA aunque el cuerpo parezca limpio', function ($t) {
         // El corazon del fix: un 500 con cuerpo {} tiene toda la pinta de exito
         // si solo se mira el cuerpo. El status es lo que lo desmiente.

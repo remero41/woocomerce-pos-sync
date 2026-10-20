@@ -1,3 +1,12 @@
+## 2.17.1
+
+### El Registro dice por qué falló una llamada al TPV
+
+- **Antes un error salía como «HTTP 400» sin más.** El TPV explica el
+  motivo, pero el conector no sabía leerlo. Ahora el Registro muestra el
+  motivo y una referencia (`request_id`) con la que soporte encuentra el
+  error en el TPV.
+
 ## 2.17.0
 
 ### Las fotos ya no se repiten en la tienda ni en el TPV
