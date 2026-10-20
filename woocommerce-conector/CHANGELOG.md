@@ -1,3 +1,14 @@
+## 2.17.2
+
+### El motivo de los errores también en pedidos, devoluciones y volcados
+
+- **Pedidos, devoluciones, cambios de estado, volcado de productos y la
+  prueba de conexión** decían el error del TPV como un bloque de texto
+  técnico o «unknown». Ahora dicen el motivo y su referencia, igual que el
+  Registro desde la 2.17.1.
+- Un pedido web que el TPV rechaza por falta de stock se sigue poniendo
+  «en espera» aunque el TPV responda en el formato nuevo de errores.
+
 ## 2.17.1
 
 ### El Registro dice por qué falló una llamada al TPV

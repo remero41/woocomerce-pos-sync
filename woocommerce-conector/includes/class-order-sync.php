@@ -198,8 +198,8 @@ class TPV_Sync_Order_Sync
             // Detectar insufficient_stock (409) — el TPV vendió la última unidad
             // mientras WC procesaba el pago. Mejor poner on-hold y avisar al admin
             // que reembolsar automáticamente (puede ser producto reponible).
-            $code  = $result['errors'][0]['error']   ?? '';
-            $error = $result['errors'][0]['message'] ?? wp_json_encode($result);
+            $code  = TPV_Sync_API_Client::codigoDeError($result);
+            $error = TPV_Sync_API_Client::mensajeDeError((int) ($result['_status'] ?? 0), $result);
             if ($code === 'insufficient_stock' || str_contains((string)$error, 'insufficient_stock')) {
                 $order->update_status('on-hold',
                     'Pago recibido pero el TPV no tiene stock disponible. Revisar: reponer o reembolsar.');
@@ -446,7 +446,7 @@ class TPV_Sync_Order_Sync
             $this->log($wcOrderId, 'ok', "Estado WC '{$to}' → TPV status_id={$accion}");
         } else {
             $this->log($wcOrderId, 'error', "Estado WC '{$to}' → TPV status_id={$accion} rechazado: "
-                . substr((string) ($r['errors'][0]['message'] ?? wp_json_encode($r)), 0, 300));
+                . substr(TPV_Sync_API_Client::mensajeDeError((int) ($r['_status'] ?? 0), (array) $r), 0, 300));
         }
     }
 
@@ -558,7 +558,7 @@ class TPV_Sync_Order_Sync
             if (!(int) ($r['data']['return_id'] ?? $r['return_id'] ?? 0)) {
                 $errores++;
                 $this->log($wcOrderId, 'error', "Devolución total línea {$opid}: "
-                    . substr((string) ($r['errors'][0]['message'] ?? wp_json_encode($r)), 0, 300));
+                    . substr(TPV_Sync_API_Client::mensajeDeError((int) ($r['_status'] ?? 0), (array) $r), 0, 300));
             }
         }
         if ($errores > 0) {
@@ -669,7 +669,7 @@ class TPV_Sync_Order_Sync
                 $hechas[$itemId] = $returnId;
             } else {
                 $errores++;
-                $msg = $result['errors'][0]['message'] ?? wp_json_encode($result);
+                $msg = TPV_Sync_API_Client::mensajeDeError((int) ($result['_status'] ?? 0), (array) $result);
                 $this->log($wcOrderId, 'error', "Refund WC #{$refundId} línea {$itemId}: {$msg}");
             }
         }
