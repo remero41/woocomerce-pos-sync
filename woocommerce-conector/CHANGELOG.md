@@ -9,16 +9,25 @@ en el TPV como no publicables. La tienda online respeta esa marca:
   borrador: no se borra ni pierde el enlace con el TPV, y sus pedidos y su
   stock siguen como siempre.
 - **Al quitar la marca vuelve a su estado de antes.** Un producto que estaba
-  publicado vuelve a publicarse; uno que estaba en privado vuelve a privado.
-  Uno que mandaste a la papelera se queda en la papelera.
-- **Una foto marcada sale de la tienda.** Si la trajo el TPV, deja de ser la
-  foto principal o sale de la galería (sigue en la biblioteca de medios). Las
-  fotos que subiste en la tienda no se tocan. Lo mismo pasa con una foto que
+  publicado vuelve a publicarse; uno que estaba en privado o pendiente vuelve a
+  privado o pendiente, también si lo cambiaste a mano mientras estaba marcado.
+  Nunca vuelve a la papelera ni sale de ella.
+- **Mientras está marcado, su ficha la manda el TPV.** Lo que hagas en la
+  tienda con ese producto (editarlo, enviarlo al TPV, mandarlo a la papelera,
+  borrarlo o borrar una talla) no cambia la caja. El stock sí se sigue
+  sincronizando.
+- **Una foto marcada sale de la tienda.** Si el TPV la trajo para ese
+  producto, deja de ser la foto principal o sale de la galería (sigue en la
+  biblioteca de medios). Las fotos que subiste en la tienda, o las del TPV que
+  pusiste a mano en otro producto, no se tocan. Lo mismo pasa con una foto que
   el TPV ya no tiene.
-- La marca la recoge el siguiente aviso del producto, el volcado, el repaso
-  de stock de cada noche o «Reconciliar catálogos», que lo avisa en la
-  simulación y no crea ni corrige un producto marcado.
-- Editar en la tienda un producto marcado ya no lo oculta en la caja.
+- **Si el TPV cambia de dominio, las fotos no se pierden ni se vuelven a
+  descargar.** Si una foto nueva no se puede descargar por un fallo pasajero,
+  la de su sitio se queda hasta el siguiente aviso (queda en el Registro).
+- La marca de un producto la recoge el siguiente aviso del producto, el
+  volcado, el repaso de stock de cada noche o «Reconciliar catálogos», que lo
+  avisa en la simulación y no crea ni corrige un producto marcado. La de una
+  foto, el siguiente aviso de ese producto o el volcado.
 
 ## 2.17.2
 

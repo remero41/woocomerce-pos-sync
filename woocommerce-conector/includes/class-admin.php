@@ -3518,6 +3518,9 @@ class TPV_Sync_Admin
             foreach ($pairs as $p) {
                 $tpvId = (int)$p->tpv_id;
                 if ($tpvId <= 0) continue;
+                // Un producto que el TPV marca como no publicable no lo borra la tienda:
+                // su catálogo lo manda el TPV.
+                if (TPV_Sync_Product_Sync::esNoPublicable((int) $p->post_id)) continue;
                 try {
                     $r = $api->delete("/products/$tpvId");
                     if (TPV_Sync_API_Client::fueBien($r)) {   // BUG-A: rama de EXITO

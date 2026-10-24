@@ -281,6 +281,12 @@ final class TPV_Sync_Categorias_Sync
         $desde = (int) get_option(self::CURSOR, 0);
         $tanda = ($this->productosEnlazados)($desde, $lote);
         foreach ($tanda as $e) {
+            // Marcado como no publicable: su catálogo lo manda el TPV y la copia de Woo
+            // está congelada; sus categorías no se juntan en ningún sentido.
+            if (TPV_Sync_Product_Sync::esNoPublicable((int) $e['post_id'])) {
+                update_option(self::CURSOR, $e['post_id'], false);
+                continue;
+            }
             $r = $this->api->get('/products/' . $e['tpv_id']);
             if (TPV_Sync_API_Client::fueBien($r)) {
                 $deTpv = array_map(static fn ($c) => (int) ($c['category_id'] ?? 0), (array) ($r['data']['categories'] ?? []));

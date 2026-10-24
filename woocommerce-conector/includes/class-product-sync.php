@@ -37,6 +37,8 @@ class TPV_Sync_Product_Sync
      */
     const NO_PUBLICABLE_META        = '_tpv_no_publicable';
     const NO_PUBLICABLE_ESTADO_META = '_tpv_no_publicable_estado';
+    /** Fotos de la caja que sync_images dejó puestas en este producto: solo esas se le quitan. */
+    const FOTOS_CAJA_META           = '_tpv_fotos_caja';
     const TPV_CUSTOMER_META     = '_tpv_customer_id';
 
     public function __construct(TPV_Sync_API_Client $api)
@@ -299,13 +301,17 @@ class TPV_Sync_Product_Sync
         return $actual === 'publish' ? 'draft' : $actual;
     }
 
+    /** Estados de Woo que se devuelven al desmarcar: nunca la papelera ni uno desconocido. */
+    const ESTADOS_RESTAURABLES = ['publish', 'private', 'pending', 'future'];
+
     /**
      * El TPV marca el producto como no publicable (plan B3, D19): Woo deja de enseñarlo.
      * Pasa a BORRADOR sin borrarlo ni desenlazarlo (en la papelera se queda en la
-     * papelera) y se apunta el estado que tenía antes de la PRIMERA marca: un segundo
-     * aviso no lo pisa con el borrador que puso el primero. Lo llaman todos los caminos
-     * que ven la marca: upsert (avisos, volcado), el repaso de stock y «Reconciliar
-     * catálogos». Marcar en el TPV no avisa a Woo: cuanto antes lo vea uno, mejor.
+     * papelera). El estado de antes se apunta solo cuando el retiro mueve de verdad el
+     * post: la primera vez y cada vez que el producto ya marcado aparece fuera de
+     * borrador (alguien lo cambió en Woo durante la marca y su última decisión manda).
+     * Lo llaman todos los caminos que ven la marca: upsert (avisos, volcado), el repaso
+     * de stock y «Reconciliar catálogos». Marcar en el TPV no avisa a Woo.
      */
     private function retirarNoPublicable(int $postId, int $tpvId): void
     {
@@ -314,12 +320,10 @@ class TPV_Sync_Product_Sync
         $GLOBALS['tpv_sync_skip_wc_product_push'] = true;
         try {
             update_post_meta($postId, self::TPV_ID_META, $tpvId);
+            update_post_meta($postId, self::NO_PUBLICABLE_META, '1');
             $estado = (string) get_post_status($postId);
-            if (!self::esNoPublicable($postId)) {
-                update_post_meta($postId, self::NO_PUBLICABLE_ESTADO_META, $estado);
-                update_post_meta($postId, self::NO_PUBLICABLE_META, '1');
-            }
             if ($estado !== 'draft' && $estado !== 'trash') {
+                update_post_meta($postId, self::NO_PUBLICABLE_ESTADO_META, $estado);
                 wp_update_post(['ID' => $postId, 'post_status' => 'draft']);
                 $this->log('ok', $tpvId, "Pasado a borrador: el TPV lo marca como no publicable (estaba en «{$estado}», post=$postId)");
             }
@@ -330,11 +334,12 @@ class TPV_Sync_Product_Sync
 
     /**
      * Estado desde el que upsert calcula el nuevo (estadoPost). Si el producto está
-     * retirado por «no publicable» (y el TPV ya no lo marca), el de antes de retirarlo:
-     * un producto privado o pendiente vuelve a serlo, no a «publicado». Si alguien lo
-     * cambió en Woo mientras tanto (ya no está en borrador), manda lo que hay ahora:
-     * desmarcar no saca nada de la papelera. La marca la quita upsert DESPUÉS de
-     * devolverle el estado: si algo falla antes, el siguiente aviso lo vuelve a intentar.
+     * retirado por «no publicable» (y el TPV ya no lo marca) y sigue en el borrador del
+     * retiro, el de antes de retirarlo, si es publish, private, pending o future: un
+     * producto privado o pendiente vuelve a serlo, no a «publicado». Si alguien lo
+     * cambió en Woo mientras tanto, o no hay estado apuntado, manda lo que hay ahora:
+     * desmarcar no mete nada en la papelera ni lo saca de ella. La marca la quita upsert
+     * DESPUÉS de devolverle el estado: si algo falla antes, el siguiente aviso reintenta.
      */
     private static function estadoTrasNoPublicable(int $postId): string
     {
@@ -343,7 +348,7 @@ class TPV_Sync_Product_Sync
             return $actual;
         }
         $previo = (string) get_post_meta($postId, self::NO_PUBLICABLE_ESTADO_META, true);
-        return $actual === 'draft' && $previo !== '' ? $previo : $actual;
+        return $actual === 'draft' && in_array($previo, self::ESTADOS_RESTAURABLES, true) ? $previo : $actual;
     }
 
     // ─── Upsert único ─────────────────────────────────────────────────────────
@@ -1194,16 +1199,11 @@ class TPV_Sync_Product_Sync
 
         foreach ($postIds as $postId) {
             $postId = (int) $postId;
+            // Un no publicable no viaja: su catálogo lo manda el TPV (ni enviado ni error:
+            // el asistente lo cuenta como omitido).
+            if (self::esNoPublicable($postId)) { continue; }
             $payload = $this->buildPushPayload($postId);
             if ($payload === null) { $stats['errors']++; continue; }
-            // Un no publicable ya enlazado va por la ruta singular: /products/bulk
-            // escribe siempre `status` (si falta, 1) y su borrador lo puso la caja.
-            if (self::esNoPublicable($postId) && (int) get_post_meta($postId, self::TPV_ID_META, true) > 0) {
-                $ok = $this->push_wc_product_to_tpv($postId);
-                if ($ok) { $stats['sent']++; } else { $stats['errors']++; }
-                $stats['fallback']++;
-                continue;
-            }
             // Los productos con variantes no caben en /products/bulk: ese
             // endpoint escribe solo sku/price/quantity/status y no toca
             // `options` (ver el UPDATE de ProductController::bulk). Tienen
@@ -1826,6 +1826,12 @@ class TPV_Sync_Product_Sync
                     $this->log('ok', $tpvId, "Autocurado: enlace post=$postId ↔ TPV id=$tpvId");
                 }
 
+                // Marcado como no publicable: su copia de Woo está congelada; ni sus fotos
+                // ni su precio se cuadran con la caja (su catálogo lo manda el TPV).
+                if (self::esNoPublicable($postId)) {
+                    continue;
+                }
+
                 if ($imagenes && $product) {
                     $antes = get_post_meta($postId, '_tpv_images_sent', true);
                     $this->push_images_to_tpv($postId, $product, $tpvId);
@@ -2137,6 +2143,11 @@ class TPV_Sync_Product_Sync
             ? (int)$productOrId->get_id()
             : (int)$productOrId;
         if (!$postId) return false;
+        // Marcado como no publicable: su catálogo lo manda el TPV. La copia de Woo está
+        // congelada (upsert no la refresca) y no vuelve a la caja por ningún camino
+        // (edición, volcado, CLI, autocurado, alta de un duplicado). El stock, sí:
+        // va por push_wc_stock_change.
+        if (self::esNoPublicable($postId)) return false;
 
         // Modo Principal: si manda el TPV, los cambios iniciados en WC sobre
         // productos sincronizados deben REVERTIRSE (re-leer desde el TPV) y
@@ -2326,12 +2337,6 @@ class TPV_Sync_Product_Sync
             $parche = $payload;
             if (self::precioWebEsDeCaja($product)) {
                 unset($parche['price']);
-            }
-            // El borrador de un no publicable lo puso la caja, no la web: no vuelve al
-            // TPV como status 0 (lo escondería en la caja y, al desmarcarlo, ya no
-            // volvería a publicarse en la tienda).
-            if (self::esNoPublicable($postId)) {
-                unset($parche['status']);
             }
             $r = $this->api->patch("/products/$tpvId", $parche);
             // Si el TPV ya no tiene este producto (404 → type contiene
@@ -2792,6 +2797,8 @@ class TPV_Sync_Product_Sync
         if (!empty($GLOBALS['tpv_sync_skip_wc_product_push'])) return;
         $post = get_post($postId);
         if (!$post || $post->post_type !== 'product') return;
+        // Marcado como no publicable: lo que se haga en Woo con su borrador no llega a la caja.
+        if (self::esNoPublicable($postId)) return;
 
         $tpvId = (int)get_post_meta($postId, self::TPV_ID_META, true);
         if (!$tpvId) return;
@@ -2809,6 +2816,8 @@ class TPV_Sync_Product_Sync
         if (!empty($GLOBALS['tpv_sync_skip_wc_product_push'])) return;
         $post = get_post($postId);
         if (!$post || $post->post_type !== 'product') return;
+        // Marcado como no publicable: lo que se haga en Woo con su borrador no llega a la caja.
+        if (self::esNoPublicable($postId)) return;
 
         $tpvId = (int)get_post_meta($postId, self::TPV_ID_META, true);
         if (!$tpvId) return;
@@ -2828,6 +2837,8 @@ class TPV_Sync_Product_Sync
         if (!empty($GLOBALS['tpv_sync_skip_wc_product_push'])) return;
         $post = get_post($postId);
         if (!$post || $post->post_type !== 'product') return;
+        // Marcado como no publicable: lo que se haga en Woo con su borrador no llega a la caja.
+        if (self::esNoPublicable($postId)) return;
 
         $tpvId = (int)get_post_meta($postId, self::TPV_ID_META, true);
         if (!$tpvId) return;
@@ -2858,6 +2869,8 @@ class TPV_Sync_Product_Sync
         if (!empty($GLOBALS['tpv_sync_skip_wc_product_push'])) return;
         $post = get_post($postId);
         if (!$post || $post->post_type !== 'product_variation') return;
+        // Talla de un producto marcado como no publicable: la caja no se entera.
+        if (self::esNoPublicable((int) $post->post_parent)) return;
 
         // Si manda el TPV, la talla es suya: un borrado en Woo no se propaga.
         if ((string) get_option('tpv_sync_principal', '') === 'tpv') return;
@@ -2989,6 +3002,8 @@ class TPV_Sync_Product_Sync
     private function push_images_to_tpv(int $postId, $product, int $tpvId): void
     {
         if ($tpvId <= 0) return;
+        // Marcado como no publicable: tampoco sus fotos de Woo viajan a la caja.
+        if (self::esNoPublicable($postId)) return;
 
         $alreadySent = (array) get_post_meta($postId, '_tpv_images_sent', true);
         if (!is_array($alreadySent)) $alreadySent = [];
@@ -3070,17 +3085,22 @@ class TPV_Sync_Product_Sync
 
     /**
      * Descarga una imagen via wp_remote_get (evita las restricciones de download_url).
-     * Devuelve la ruta al archivo temporal o null si falla.
+     * Devuelve la ruta al archivo temporal o null si falla. $pasajero dice si el fallo
+     * es de los que se arreglan solos (sin respuesta, 429 o 5xx): un 4xx, un cuerpo
+     * vacío o un tipo que no es imagen fallarán igual la próxima vez.
      */
-    private function download_image(string $url): ?string
+    private function download_image(string $url, ?bool &$pasajero = null): ?string
     {
+        $pasajero = false;
         $response = wp_remote_get($url, ['timeout' => 15, 'sslverify' => true]);
         if (is_wp_error($response)) {
+            $pasajero = true;
             error_log("tpv-sync: download_image failed for $url — " . $response->get_error_message());
             return null;
         }
         $code = wp_remote_retrieve_response_code($response);
         if ($code !== 200) {
+            $pasajero = (int) $code === 0 || (int) $code === 429 || (int) $code >= 500;
             error_log("tpv-sync: download_image HTTP $code for $url");
             return null;
         }
@@ -3104,27 +3124,35 @@ class TPV_Sync_Product_Sync
     // ─── Sincronizar galería completa ─────────────────────────────────────────
 
     /**
-     * Importa todas las imágenes de un producto (principal + galería).
-     * Usa la URL como clave para evitar reimportar la misma imagen.
+     * Importa todas las imágenes de un producto (principal + galería) y quita las que
+     * la caja trajo para él y ya no manda. Las fotos se reconocen por su RUTA relativa
+     * (rutaDeImagen), no por la URL: un cambio de dominio de la caja no es otra foto.
      */
     private function sync_images(int $postId, array $images, int $tpvId): void
     {
         self::cargarMediosWp();
 
-        // Lo que la caja manda ahora, por URL. La API ya no sirve las fotos no
-        // publicables ni las de ruta rara (plan B3, Tarea 13): dejan de venir.
+        // Lo que la caja manda ahora. La API ya no sirve las fotos no publicables ni las
+        // de ruta rara (plan B3, Tarea 13): dejan de venir.
         $vienen = [];
         foreach ($images as $img) {
             $url = (string) ($img['url'] ?? '');
-            if ($url !== '') $vienen[$url] = true;
+            if ($url !== '') $vienen[self::rutaDeImagen($url)] = true;
         }
 
-        // URLs de la caja ya importadas en este post (un adjunto puede tener
-        // varias: la caja guarda cada subida de la misma foto con otro nombre).
-        $existing = [];
+        // Fotos de la caja que el producto ya tiene, por ruta (un adjunto puede tener
+        // varias: la caja guarda cada subida de la misma foto con otro nombre). Primero
+        // las adjuntas a él; después su destacada y su galería.
+        $adjuntas = [];
         foreach (get_attached_media('image', $postId) as $att) {
-            foreach ((array) get_post_meta($att->ID, '_tpv_image_url', false) as $u) {
-                $existing[] = (string) $u;
+            $adjuntas[] = (int) $att->ID;
+        }
+        $galeriaActual = (string) get_post_meta($postId, '_product_image_gallery', true);
+        $porRuta = [];
+        foreach (array_merge($adjuntas, [(int) get_post_thumbnail_id($postId)], explode(',', $galeriaActual)) as $id) {
+            if ((int) $id <= 0) continue;
+            foreach ((array) get_post_meta((int) $id, '_tpv_image_url', false) as $u) {
+                if ((string) $u !== '') $porRuta[self::rutaDeImagen((string) $u)] ??= (int) $id;
             }
         }
 
@@ -3134,29 +3162,33 @@ class TPV_Sync_Product_Sync
 
         $galleryIds = [];
         $mainId     = null;
+        // Una foto que viene y no se pudo traer por un fallo pasajero puede ser la misma
+        // que ya tiene con otro nombre: esta vez no se quita ninguna del mismo sitio.
+        $falloPrincipal = false;
+        $falloGaleria   = false;
 
         foreach ($images as $img) {
-            $url = $img['url'] ?? '';
-            if (!$url) continue;
+            $url = (string) ($img['url'] ?? '');
+            if ($url === '') continue;
+            $esPrincipal = !empty($img['is_main']);
 
-            // Saltar si ya está importada
-            if (in_array($url, $existing, true)) {
-                // Recuperar su attachment ID para reconstruir la galería
-                global $wpdb;
-                $attId = (int)$wpdb->get_var($wpdb->prepare(
-                    "SELECT post_id FROM {$wpdb->postmeta}
-                     WHERE meta_key = '_tpv_image_url' AND meta_value = %s LIMIT 1",
-                    $url
-                ));
-                if ($attId) {
-                    if ($img['is_main']) $mainId = $attId;
-                    else $galleryIds[] = $attId;
-                }
+            // Ya la tiene (aunque llegue con otro dominio).
+            $attId = $porRuta[self::rutaDeImagen($url)] ?? 0;
+            if ($attId > 0) {
+                if ($esPrincipal) $mainId = $attId;
+                else $galleryIds[] = $attId;
                 continue;
             }
 
-            $tmpFile = $this->download_image($url);
-            if (!$tmpFile) continue;
+            $pasajero = false;
+            $tmpFile = $this->download_image($url, $pasajero);
+            if (!$tmpFile) {
+                if ($pasajero) {
+                    if ($esPrincipal) $falloPrincipal = true;
+                    else $falloGaleria = true;
+                }
+                continue;
+            }
 
             $huella = (string) md5_file($tmpFile);
             if (isset($porContenido[$huella])) {
@@ -3166,7 +3198,7 @@ class TPV_Sync_Product_Sync
                 add_post_meta($attId, '_tpv_image_url', $url);
             } else {
                 $ext     = pathinfo(parse_url($url, PHP_URL_PATH), PATHINFO_EXTENSION) ?: 'jpg';
-                $suffix  = $img['is_main'] ? 'main' : ('gallery-' . $img['sort_order']);
+                $suffix  = $esPrincipal ? 'main' : ('gallery-' . ($img['sort_order'] ?? 0));
                 $fileArr = [
                     'name'     => "tpv-{$tpvId}-{$suffix}.{$ext}",
                     'tmp_name' => $tmpFile,
@@ -3180,45 +3212,88 @@ class TPV_Sync_Product_Sync
                 $porContenido[$huella] = (int) $attId;
             }
 
-            if ($img['is_main']) $mainId = $attId;
+            if ($esPrincipal) $mainId = $attId;
             else $galleryIds[] = $attId;
         }
+        $resueltas = array_values(array_filter(array_merge([(int) $mainId], $galleryIds)));
+
+        // Solo se quita lo que la caja trajo para ESTE producto (lo que sync_images le
+        // puso; en un producto que aún no lo tiene apuntado, las fotos de la caja
+        // adjuntas a él) y ya no viene. Una foto de la caja que el comerciante eligió a
+        // mano para otro producto, o una subida en Woo, no se toca. El adjunto no se
+        // borra nunca (wp_delete_attachment es de B4).
+        $apuntadas = get_post_meta($postId, self::FOTOS_CAJA_META, true);
+        $traidas = is_array($apuntadas) ? array_map('intval', $apuntadas) : $adjuntas;
+        $retirable = fn (int $id): bool => in_array($id, $traidas, true) && self::vinoDeLaCaja($id)
+            && !self::sigueViniendo($id, $vienen);
 
         if ($mainId) {
             set_post_thumbnail($postId, $mainId);
         } else {
-            // Sin principal que poner: la destacada que trajo la caja y ya no viene
-            // (no publicable, borrada o con ruta rara) se quita; una subida a mano en
-            // Woo se queda. El adjunto no se borra (wp_delete_attachment es de B4).
+            // Sin principal que poner: la destacada que la caja trajo y ya no viene (no
+            // publicable, borrada o con ruta rara) se quita, salvo que la principal que
+            // manda no se haya podido traer: entonces se espera al siguiente aviso.
             $destacada = (int) get_post_thumbnail_id($postId);
-            if (self::vinoDeLaCaja($destacada) && !self::sigueViniendo($destacada, $vienen)) {
-                delete_post_thumbnail($postId);
+            if ($retirable($destacada)) {
+                if ($falloPrincipal) {
+                    $this->log('warn', $tpvId, "Foto principal sin cambiar: la de la caja no se pudo traer (post=$postId)");
+                } else {
+                    delete_post_thumbnail($postId);
+                }
             }
         }
 
-        // Galería: las de la caja en su orden y, detrás, las que ya tenía y se quedan:
-        // las subidas a mano en Woo y las de la caja que siguen viniendo (aunque esta
-        // vez no se hayan podido traer). Las que trajo la caja y ya no vienen salen de
-        // la galería y siguen en la biblioteca de medios.
-        $actual = (string) get_post_meta($postId, '_product_image_gallery', true);
-        foreach (array_filter(array_map('intval', explode(',', $actual))) as $g) {
-            if (!self::vinoDeLaCaja($g) || self::sigueViniendo($g, $vienen)) {
+        // Galería: las de la caja en su orden y, detrás, las que ya tenía y se quedan.
+        // Las que trajo la caja y ya no vienen salen de la galería y siguen en la
+        // biblioteca de medios (salvo que alguna que viene no se haya podido traer).
+        $aplazadas = 0;
+        foreach (array_filter(array_map('intval', explode(',', $galeriaActual))) as $g) {
+            if (!$retirable($g)) {
                 $galleryIds[] = $g;
+            } elseif ($falloGaleria) {
+                $galleryIds[] = $g;
+                $aplazadas++;
             }
         }
-        $galleryIds = self::galeriaSinRepetir($galleryIds, (int) ($mainId ?: get_post_thumbnail_id($postId)));
-        if (implode(',', $galleryIds) !== $actual) {
+        if ($aplazadas > 0) {
+            $this->log('warn', $tpvId, "Galería sin limpiar ($aplazadas fotos): alguna foto de la caja no se pudo traer (post=$postId)");
+        }
+        $destacadaFinal = (int) ($mainId ?: get_post_thumbnail_id($postId));
+        $galleryIds = self::galeriaSinRepetir($galleryIds, $destacadaFinal);
+        if (implode(',', $galleryIds) !== $galeriaActual) {
             update_post_meta($postId, '_product_image_gallery', implode(',', $galleryIds));
+        }
+
+        // Lo que la caja deja puesto en este producto, para la próxima vez.
+        $nuevas = [];
+        foreach (array_merge([$destacadaFinal], $galleryIds) as $id) {
+            if ($id > 0 && self::vinoDeLaCaja($id)
+                && (in_array($id, $resueltas, true) || in_array($id, $traidas, true))) {
+                $nuevas[] = $id;
+            }
+        }
+        if (!is_array($apuntadas) || $nuevas !== $traidas) {
+            update_post_meta($postId, self::FOTOS_CAJA_META, $nuevas);
         }
     }
 
-    /** ¿Sigue mandando la caja alguna de las URL con que trajo este adjunto? */
+    /** ¿Sigue mandando la caja alguna de las rutas con que trajo este adjunto? */
     private static function sigueViniendo(int $attId, array $vienen): bool
     {
         foreach ((array) get_post_meta($attId, '_tpv_image_url', false) as $u) {
-            if (isset($vienen[(string) $u])) return true;
+            if (isset($vienen[self::rutaDeImagen((string) $u)])) return true;
         }
         return false;
+    }
+
+    /**
+     * Ruta de una foto de la caja relativa a su carpeta image/ (lo que cuelga del último
+     * «/image/», como la ruta que guarda el TPV): no cambia si la caja cambia de dominio.
+     */
+    private static function rutaDeImagen(string $url): string
+    {
+        $pos = strrpos($url, '/image/');
+        return $pos === false ? $url : substr($url, $pos + strlen('/image/'));
     }
 
     /**

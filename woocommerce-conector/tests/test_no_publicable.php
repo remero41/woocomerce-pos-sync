@@ -15,16 +15,23 @@ declare(strict_types=1);
  *   - el volcado por lotes, el repaso nocturno de stock y «Reconciliar catálogos»
  *     (Reconciler::decidir) no lo crean ni lo corrigen, pero si lo ven publicado
  *     lo retiran (la simulación de «Reconciliar» lo avisa);
- *   - su borrador no vuelve al TPV como «oculto» (status 0 lo escondería en la caja);
- *   - una foto que trajo la caja (`_tpv_image_url`) y deja de venir sale de la
- *     galería y de la destacada; una subida a mano en Woo no se toca. Ningún
- *     adjunto se borra (wp_delete_attachment es de B4, R44).
+ *   - mientras está marcado, nada de su catálogo vuelve de Woo a la caja (edición,
+ *     volcado, papelera, borrado, tallas, fotos, categorías, reset): la copia de Woo
+ *     está congelada. El stock sí viaja;
+ *   - una foto que la caja trajo para ESE producto y deja de venir (por ruta, no por
+ *     URL: un cambio de dominio no es otra foto) sale de la galería y de la destacada;
+ *     una subida a mano en Woo, o una de la caja elegida a mano para otro producto,
+ *     no se toca. Ningún adjunto se borra (wp_delete_attachment es de B4, R44).
  *
  * Marcar en el TPV no avisa hoy a Woo (no hay product.updated): el conector lo
  * ve en el siguiente camino que lea el producto, y todos tienen que reaccionar.
  */
 
 require_once __DIR__ . '/test_venta_a_peso.php';
+require_once __DIR__ . '/test_autocuracion.php';
+require_once __DIR__ . '/test_pvp_cuadre.php';
+require_once __DIR__ . '/fixtures/terminos_en_memoria.php';
+require_once __DIR__ . '/fixtures/api_categorias_falsa.php';
 
 // ─── WordPress en memoria: lo que tocan la destacada y la galería ───────────
 if (!function_exists('get_attached_media')) {
@@ -67,6 +74,17 @@ final class ApiNoPublicableFalsa extends TPV_Sync_API_Client
         if (preg_match('#^/products/(\d+)$#', $path, $m)) {
             return ['data' => $this->productos[(int) $m[1]] ?? []];
         }
+        if (preg_match('#^/products/(\d+)/stock$#', $path, $m)) {
+            return ['data' => ['quantity' => (float) ($this->productos[(int) $m[1]]['quantity'] ?? 0)]];
+        }
+        if ($path === '/health') {
+            return ['data' => ['capabilities' => ['variants_in_place']]];
+        }
+        return ['data' => []];
+    }
+    public function delete(string $path): array
+    {
+        $this->llamadas[] = "DELETE $path";
         return ['data' => []];
     }
     public function patch(string $path, array $body = []): array
@@ -362,35 +380,153 @@ function run_no_publicable_tests(WooTestRunner $t): void
         $t->assertEquals('draft', estado_post(8308), 'enlazado y publicado');
     });
 
-    $t->test('su borrador no vuelve al TPV como «oculto» al editarlo en Woo', function ($t) {
+    $t->test('editar en Woo un marcado no manda nada de su ficha a la caja; el stock sí', function ($t) {
         np_tienda();
-        $GLOBALS['__wp_meta'][8310] += ['_tpv_product_id' => 502];
-        $api = new ApiNoPublicableFalsa([502 => tpv_producto(502, ['no_publicable' => true])]);
+        $GLOBALS['__wp_meta'][8310] += ['_tpv_product_id' => 502, '_manage_stock' => 'yes'];
+        $GLOBALS['__wp_posts'][8310]->post_title = 'Nombre de antes de la marca';
+        $api = new ApiNoPublicableFalsa([502 => tpv_producto(502, ['no_publicable' => true, 'quantity' => 5])]);
         $sync = new TPV_Sync_Product_Sync($api);
-        $sync->upsert(tpv_producto(502, ['no_publicable' => true]));
-        $sync->push_wc_product_to_tpv(8310);
+        $sync->upsert(tpv_producto(502, ['no_publicable' => true, 'name' => 'Nombre actual en la caja']));
+        $api->llamadas = [];
 
-        $parche = $api->patches['/products/502'] ?? null;
-        $t->assert(is_array($parche), 'no se envió la edición al TPV');
-        $t->assert(!array_key_exists('status', (array) $parche), 'status 0 lo escondería en la caja');
+        $t->assertEquals(false, $sync->push_wc_product_to_tpv(8310));
+        $t->assertEquals([], $api->llamadas, 'la copia congelada de Woo volvería a la caja');
 
-        // Un borrador puesto a mano sí viaja como siempre.
+        $sync->push_wc_stock_change(new WC_Product(8310, 4.0), ['stock_quantity']);
+        $t->assertEquals(-1.0, $api->patches['/products/502/stock']['quantity_change'] ?? 'ausente',
+            'el stock sigue viajando');
+
+        // Un borrador puesto a mano, sin marca, viaja como siempre.
         $GLOBALS['__wp_posts'][8306]->post_status = 'draft';
         $sync->push_wc_product_to_tpv(8306);
         $t->assertEquals(0, $api->patches['/products/900']['status'] ?? 'ausente');
     });
 
-    $t->test('el envío en bloque lo manda por la ruta que no toca el estado', function ($t) {
+    $t->test('el volcado Woo → TPV del asistente lo omite', function ($t) {
+        np_tienda();
+        $GLOBALS['__wp_meta'][8310] += ['_tpv_product_id' => 502, '_tpv_no_publicable' => '1'];
+        $api = new ApiNoPublicableFalsa();
+        $stats = (new TPV_Sync_Product_Sync($api))->push_wc_products_bulk([8310, 8306]);
+
+        $t->assert(!in_array('R3UW28310', array_column($api->itemsBulk, 'sku'), true), '/products/bulk lleva el marcado');
+        $t->assertEquals(['2RKA78306'], array_column($api->itemsBulk, 'sku'), 'el que no está marcado sí va');
+        $t->assert(!isset($api->patches['/products/502']), 'ni por la ruta singular');
+        $t->assertEquals(0, ($stats['errors'] ?? 0) + ($stats['fallback'] ?? 0), 'ni cuenta como error: es un omitido');
+    });
+
+    $t->test('papelera, restaurar, borrar y borrar una talla en Woo no tocan la caja', function ($t) {
+        np_tienda();
+        $GLOBALS['__wp_meta'][8310] += ['_tpv_product_id' => 502, '_tpv_no_publicable' => '1'];
+        $GLOBALS['__wp_posts'][8320] = (object) ['ID' => 8320, 'post_type' => 'product_variation', 'post_parent' => 8310];
+        $GLOBALS['__wp_meta'][8320] = ['_tpv_option_value_id' => 33];
+        $api = new ApiNoPublicableFalsa();
+        $sync = new TPV_Sync_Product_Sync($api);
+        $sync->push_wc_trash_to_tpv(8310);
+        $sync->push_wc_untrash_to_tpv(8310);
+        $sync->push_wc_delete_to_tpv(8310);
+        $sync->push_wc_variation_delete_to_tpv(8320);
+        $t->assertEquals([], $api->llamadas, 'la caja oculta, borra o pierde la talla de un marcado');
+
+        // Sin la marca, todo como siempre.
+        unset($GLOBALS['__wp_meta'][8310]['_tpv_no_publicable']);
+        $sync->push_wc_trash_to_tpv(8310);
+        $sync->push_wc_variation_delete_to_tpv(8320);
+        $t->assertEquals(0, $api->patches['/products/502']['status'] ?? 'ausente');
+        $t->assert(in_array('DELETE /products/502/variants/33', $api->llamadas, true), 'la talla se borra en la caja');
+    });
+
+    $t->test('el autocurado no le sube fotos ni le cuadra el precio', function ($t) {
+        autocura_tienda([8400 => ['M777', 70, [], 777]]);
+        $api = new ApiAutocuraFalsa([['product_id' => 777, 'model' => 'M777', 'sku' => '']]);
+        $GLOBALS['__wp_meta'][8400]['_tpv_no_publicable'] = '1';
+        $stats = (new TPV_Sync_Product_Sync($api))->autocurar();
+        $t->assertEquals([], $api->opsBatch, 'la foto de la web viajaría a la caja');
+        $t->assertEquals(1, $stats['revisados'] ?? 0, 'preparación: lo revisa');
+
+        // Sin la marca, la foto de la web sí sube (comprobación de que el test mira algo).
+        autocura_tienda([8400 => ['M777', 70, [], 777]]);
+        $api = new ApiAutocuraFalsa([['product_id' => 777, 'model' => 'M777', 'sku' => '']]);
+        (new TPV_Sync_Product_Sync($api))->autocurar();
+        $t->assert($api->opsBatch !== [], 'preparación: sin marca la foto sube');
+    });
+
+    $t->test('la revisión de precios del autocurado no lo toca ni lo da por atascado', function ($t) {
+        cuadre_tienda(['yes', 'yes', 21], [7071 => new ProductoPvpFalso(7071, '9.92')], [900 => [12.00, null]]);
+        $GLOBALS['__wp_meta'][7071]['_tpv_no_publicable'] = '1';
+        $s = cuadre_pasada();
+        $t->assertEquals([], cuadre_patches(), 'el precio congelado de Woo volvería a la caja');
+        $t->assertEquals(0, $s['pvp_atascados'] ?? -1, 'el panel diría «no se ha podido igualar»');
+    });
+
+    $t->test('la unión de categorías no le junta categorías en ningún sentido', function ($t) {
+        foreach ([TPV_Sync_Categorias_Sync::MARCA, TPV_Sync_Categorias_Sync::CURSOR] as $k) {
+            unset($GLOBALS['__wp_options'][$k]);
+        }
+        $GLOBALS['__wp_meta'][8310] = ['_tpv_product_id' => 502, '_tpv_no_publicable' => '1'];
+        $api = new ApiCategoriasFalsa();
+        $api->productos = [502 => [1]];
+        $s = new TPV_Sync_Categorias_Sync($api, new TerminosEnMemoria(),
+            fn (int $desde, int $lote): array => $desde < 8310 ? [['post_id' => 8310, 'tpv_id' => 502]] : []);
+        $s->unirProductos(10);
+        $t->assertEquals([], $api->llamadas, 'sus categorías de Woo viajarían a la caja');
+        $t->assertEquals([1], $api->productos[502]);
+    });
+
+    $t->test('ningún camino de catálogo Woo → TPV queda sin la guarda', function ($t) {
+        $ps = (string) file_get_contents(dirname(__DIR__) . '/includes/class-product-sync.php');
+        $cuerpo = function (string $src, string $firma): string {
+            $i = strpos($src, $firma);
+            if ($i === false) return '';
+            $j = strpos($src, "\n    }\n", $i);
+            return substr($src, $i, $j === false ? null : $j - $i);
+        };
+        foreach (['public function push_wc_product_to_tpv(', 'public function push_wc_products_bulk(',
+                  'public function push_wc_trash_to_tpv(', 'public function push_wc_untrash_to_tpv(',
+                  'public function push_wc_delete_to_tpv(', 'public function push_wc_variation_delete_to_tpv(',
+                  'private function push_images_to_tpv('] as $f) {
+            $t->assert(str_contains($cuerpo($ps, $f), 'esNoPublicable('), "sin guarda: $f");
+        }
+        $cat = (string) file_get_contents(dirname(__DIR__) . '/includes/class-categorias-sync.php');
+        $t->assert(str_contains($cuerpo($cat, 'public function unirProductos('), 'esNoPublicable('), 'sin guarda: unirProductos');
+        $adm = (string) file_get_contents(dirname(__DIR__) . '/includes/class-admin.php');
+        $t->assert(str_contains($cuerpo($adm, 'public function ajax_reset_sync('), 'esNoPublicable('),
+            'sin guarda: el reset que borra en el TPV');
+    });
+
+    $t->test('R1: desmarcar no devuelve a la papelera lo que el comerciante sacó de ella', function ($t) {
         np_tienda();
         $GLOBALS['__wp_meta'][8310] += ['_tpv_product_id' => 502];
-        $api = new ApiNoPublicableFalsa([502 => tpv_producto(502, ['no_publicable' => true])]);
-        $sync = new TPV_Sync_Product_Sync($api);
-        $sync->upsert(tpv_producto(502, ['no_publicable' => true]));
-        $sync->push_wc_products_bulk([8310]);
+        $GLOBALS['__wp_posts'][8310]->post_status = 'trash';
+        $sync = np_sync();
+        $sync->upsert(tpv_producto(502, ['no_publicable' => true]));          // en la papelera: no se mueve ni se apunta
+        $t->assertEquals(null, np_meta(8310, '_tpv_no_publicable_estado'));
+        $GLOBALS['__wp_posts'][8310]->post_status = 'draft';                  // lo restaura (WordPress lo deja en borrador)
+        $sync->upsert(tpv_producto(502, ['no_publicable' => false, 'status' => 1]));
+        $t->assertEquals('publish', estado_post(8310), 'vuelve a la papelera');
+    });
 
-        $t->assertEquals([], $api->itemsBulk, '/products/bulk escribe siempre status');
-        $t->assert(isset($api->patches['/products/502']) && !array_key_exists('status', $api->patches['/products/502']),
-            'va por PATCH sin status');
+    foreach (['private', 'pending'] as $aMano) {
+        $t->test("R2: un «{$aMano}» puesto a mano durante la marca sobrevive al repaso y al desmarcado", function ($t) use ($aMano) {
+            np_tienda();
+            $GLOBALS['__wp_meta'][8310] += ['_tpv_product_id' => 502, '_manage_stock' => 'yes', '_stock' => 5];
+            $sync = np_sync([502 => tpv_producto(502, ['no_publicable' => true, 'subtract' => true, 'quantity' => 5])]);
+            $sync->upsert(tpv_producto(502, ['no_publicable' => true]));
+            $GLOBALS['__wp_posts'][8310]->post_status = $aMano;
+            $sync->reconcile(100);                                             // aún marcado: vuelve a borrador
+            $t->assertEquals('draft', estado_post(8310));
+            $t->assertEquals($aMano, np_meta(8310, '_tpv_no_publicable_estado'), 'manda la última decisión');
+            $sync->upsert(tpv_producto(502, ['no_publicable' => false]));
+            $t->assertEquals($aMano, estado_post(8310), 'sale publicado');
+        });
+    }
+
+    $t->test('un estado apuntado que no se puede restaurar no se aplica', function ($t) {
+        np_tienda();
+        $GLOBALS['__wp_meta'][8310] += ['_tpv_product_id' => 502, '_tpv_no_publicable' => '1',
+                                        '_tpv_no_publicable_estado' => 'trash'];   // de una versión anterior
+        $GLOBALS['__wp_posts'][8310]->post_status = 'draft';
+        np_sync()->upsert(tpv_producto(502, ['no_publicable' => false]));
+        $t->assertEquals('publish', estado_post(8310), 'la papelera no se restaura nunca');
     });
 
     $t->test('test_imagen_que_trajo_la_caja_y_ya_no_viene_se_quita_de_la_galeria', function ($t) {
@@ -432,6 +568,65 @@ function run_no_publicable_tests(WooTestRunner $t): void
         np_sync()->upsert(tpv_producto(502, ['images' => np_imagenes(['g1.jpg', 'principal.jpg', 'g2.jpg'])]));
         $t->assertEquals(82, $GLOBALS['__wp_thumbs'][8310] ?? 0);
         $t->assertEquals('81,83,90', np_meta(8310, '_product_image_gallery'));
+    });
+
+    $t->test('R4: la caja cambia de dominio: las fotos que siguen viniendo se quedan sin descargar nada', function ($t) {
+        np_tienda_con_fotos();
+        $otra = 'https://caja-nueva.example/image/catalog/prov/';
+        $imgs = [
+            ['url' => $otra . 'principal.jpg', 'is_main' => true,  'sort_order' => 0],
+            ['url' => $otra . 'g1.jpg',        'is_main' => false, 'sort_order' => 1],
+        ];
+        np_sync()->upsert(tpv_producto(502, ['images' => $imgs]));   // wp_tempnam lanza si intenta descargar
+        $t->assertEquals(81, $GLOBALS['__wp_thumbs'][8310] ?? 0);
+        $t->assertEquals('82,90', np_meta(8310, '_product_image_gallery'), 'g1 sigue; g2 (marcada) sale');
+    });
+
+    $t->test('R4: si una foto que viene falla por la red, esta vez no se quita la de su sitio', function ($t) {
+        np_tienda_con_fotos();
+        $GLOBALS['__http']['catalogoFalla'] = true;    // el doble HTTP contesta 503 a las rutas «…/products»
+        $imgs = [
+            ['url' => NP_IMG . 'nueva-principal/products', 'is_main' => true,  'sort_order' => 0],
+            ['url' => NP_IMG . 'nueva-g/products',         'is_main' => false, 'sort_order' => 1],
+        ];
+        try {
+            np_sync()->upsert(tpv_producto(502, ['images' => $imgs]));
+        } finally {
+            unset($GLOBALS['__http']['catalogoFalla']);
+        }
+        $t->assertEquals(81, $GLOBALS['__wp_thumbs'][8310] ?? 0, 'se quita la destacada por un 503');
+        $t->assertEquals('82,90,83', np_meta(8310, '_product_image_gallery'));
+    });
+
+    $t->test('un fallo que no se arregla solo (404) no frena la retirada', function ($t) {
+        np_tienda_con_fotos();
+        $GLOBALS['__http']['health'] = 404;            // el doble HTTP contesta 404 a las rutas «…/health»
+        $GLOBALS['__http']['capacidades'] = [];
+        $imgs = [
+            ['url' => NP_IMG . 'principal.jpg',  'is_main' => true,  'sort_order' => 0],
+            ['url' => NP_IMG . 'rota/health',    'is_main' => false, 'sort_order' => 1],
+        ];
+        try {
+            np_sync()->upsert(tpv_producto(502, ['images' => $imgs]));
+        } finally {
+            unset($GLOBALS['__http']['health'], $GLOBALS['__http']['capacidades']);
+        }
+        $t->assertEquals('90', np_meta(8310, '_product_image_gallery'), 'las marcadas siguen publicadas por una foto rota');
+    });
+
+    $t->test('R7: una foto de la caja elegida a mano para otro producto se queda en su galería', function ($t) {
+        np_tienda_con_fotos();
+        $GLOBALS['__wp_meta'][8306]['_product_image_gallery'] = '82';   // la 82 la trajo la caja para el 502
+        $GLOBALS['__wp_adjuntos'][8306] = [];
+        np_sync()->upsert(tpv_producto(900, ['images' => []]));
+        $t->assertEquals('82', np_meta(8306, '_product_image_gallery'));
+
+        // Lo que la caja pone en un producto sí queda apuntado como suyo, y sale al dejar de venir.
+        $sync = np_sync();
+        $sync->upsert(tpv_producto(900, ['images' => np_imagenes(['g1.jpg'], false)]));
+        $t->assertEquals([82], np_meta(8306, '_tpv_fotos_caja'));
+        $sync->upsert(tpv_producto(900, ['images' => []]));
+        $t->assertEquals('', np_meta(8306, '_product_image_gallery'), 'la marcada sigue en el producto al que la caja la puso');
     });
 
     $t->test('el motivo «no publicable» está traducido con la misma clave en los tres idiomas', function ($t) {
