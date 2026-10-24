@@ -339,3 +339,9 @@ msgstr "The POS connection lacks the categories:write permission: categories wil
 
 msgid "Categorías sin pareja o sin permiso"
 msgstr "Categories without a match or without permission"
+
+msgid "no publicable en el TPV"
+msgstr "not publishable in the POS"
+
+msgid "no publicable en el TPV: pasa a borrador"
+msgstr "not publishable in the POS: moved to draft"

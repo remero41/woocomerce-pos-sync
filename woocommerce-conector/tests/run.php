@@ -150,6 +150,7 @@ require_once __DIR__ . '/test_cola_stock_delta.php';
 require_once __DIR__ . '/test_firma_legacy_replay.php';
 require_once __DIR__ . '/test_variaciones_plan.php';
 require_once __DIR__ . '/test_stock_en_vuelo.php';
+require_once __DIR__ . '/test_no_publicable.php';
 require_once dirname(__DIR__) . '/includes/class-order-sync.php';
 require_once dirname(__DIR__) . '/includes/class-admin.php';
 
@@ -204,6 +205,7 @@ run_pvp_cuadre_tests($t);
 run_venta_a_peso_tests($t);
 run_stock_en_vuelo_tests($t);
 run_gtin_rancio_tests($t);
+run_no_publicable_tests($t);
 
 require_once __DIR__ . '/test_categorias_puras.php';
 run_categorias_puras_tests($t);

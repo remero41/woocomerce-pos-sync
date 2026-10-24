@@ -1,3 +1,25 @@
+## 2.18.0
+
+### Lo que el TPV marca como «no publicable» no sale en la tienda
+
+Las fotos y fichas que un mayorista solo deja usar en la caja se pueden marcar
+en el TPV como no publicables. La tienda online respeta esa marca:
+
+- **Un producto marcado no se crea en la tienda.** Si ya estaba, pasa a
+  borrador: no se borra ni pierde el enlace con el TPV, y sus pedidos y su
+  stock siguen como siempre.
+- **Al quitar la marca vuelve a su estado de antes.** Un producto que estaba
+  publicado vuelve a publicarse; uno que estaba en privado vuelve a privado.
+  Uno que mandaste a la papelera se queda en la papelera.
+- **Una foto marcada sale de la tienda.** Si la trajo el TPV, deja de ser la
+  foto principal o sale de la galería (sigue en la biblioteca de medios). Las
+  fotos que subiste en la tienda no se tocan. Lo mismo pasa con una foto que
+  el TPV ya no tiene.
+- La marca la recoge el siguiente aviso del producto, el volcado, el repaso
+  de stock de cada noche o «Reconciliar catálogos», que lo avisa en la
+  simulación y no crea ni corrige un producto marcado.
+- Editar en la tienda un producto marcado ya no lo oculta en la caja.
+
 ## 2.17.2
 
 ### El motivo de los errores también en pedidos, devoluciones y volcados

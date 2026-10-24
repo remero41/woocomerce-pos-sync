@@ -29,6 +29,14 @@ class TPV_Sync_Product_Sync
      * kg/lb/100 g y stock decimal: Woo no lo publica ni intercambia su stock con el TPV.
      */
     const A_PESO_META           = '_tpv_a_peso';
+    /**
+     * Marca de «el TPV no deja publicarlo» (API: `no_publicable`, plan B3 D19: fotos o
+     * ficha con licencia de un mayorista). Woo no lo crea y, si ya estaba, lo tiene en
+     * borrador; NO_PUBLICABLE_ESTADO_META guarda el estado de antes de la marca para
+     * devolvérselo al desmarcarlo (ver retirarNoPublicable).
+     */
+    const NO_PUBLICABLE_META        = '_tpv_no_publicable';
+    const NO_PUBLICABLE_ESTADO_META = '_tpv_no_publicable_estado';
     const TPV_CUSTOMER_META     = '_tpv_customer_id';
 
     public function __construct(TPV_Sync_API_Client $api)
@@ -291,6 +299,53 @@ class TPV_Sync_Product_Sync
         return $actual === 'publish' ? 'draft' : $actual;
     }
 
+    /**
+     * El TPV marca el producto como no publicable (plan B3, D19): Woo deja de enseñarlo.
+     * Pasa a BORRADOR sin borrarlo ni desenlazarlo (en la papelera se queda en la
+     * papelera) y se apunta el estado que tenía antes de la PRIMERA marca: un segundo
+     * aviso no lo pisa con el borrador que puso el primero. Lo llaman todos los caminos
+     * que ven la marca: upsert (avisos, volcado), el repaso de stock y «Reconciliar
+     * catálogos». Marcar en el TPV no avisa a Woo: cuanto antes lo vea uno, mejor.
+     */
+    private function retirarNoPublicable(int $postId, int $tpvId): void
+    {
+        // El cambio lo origina el TPV: que los hooks de Woo no lo devuelvan como eco.
+        $antes = $GLOBALS['tpv_sync_skip_wc_product_push'] ?? false;
+        $GLOBALS['tpv_sync_skip_wc_product_push'] = true;
+        try {
+            update_post_meta($postId, self::TPV_ID_META, $tpvId);
+            $estado = (string) get_post_status($postId);
+            if (!self::esNoPublicable($postId)) {
+                update_post_meta($postId, self::NO_PUBLICABLE_ESTADO_META, $estado);
+                update_post_meta($postId, self::NO_PUBLICABLE_META, '1');
+            }
+            if ($estado !== 'draft' && $estado !== 'trash') {
+                wp_update_post(['ID' => $postId, 'post_status' => 'draft']);
+                $this->log('ok', $tpvId, "Pasado a borrador: el TPV lo marca como no publicable (estaba en «{$estado}», post=$postId)");
+            }
+        } finally {
+            $GLOBALS['tpv_sync_skip_wc_product_push'] = $antes;
+        }
+    }
+
+    /**
+     * Estado desde el que upsert calcula el nuevo (estadoPost). Si el producto está
+     * retirado por «no publicable» (y el TPV ya no lo marca), el de antes de retirarlo:
+     * un producto privado o pendiente vuelve a serlo, no a «publicado». Si alguien lo
+     * cambió en Woo mientras tanto (ya no está en borrador), manda lo que hay ahora:
+     * desmarcar no saca nada de la papelera. La marca la quita upsert DESPUÉS de
+     * devolverle el estado: si algo falla antes, el siguiente aviso lo vuelve a intentar.
+     */
+    private static function estadoTrasNoPublicable(int $postId): string
+    {
+        $actual = (string) get_post_status($postId);
+        if (!self::esNoPublicable($postId)) {
+            return $actual;
+        }
+        $previo = (string) get_post_meta($postId, self::NO_PUBLICABLE_ESTADO_META, true);
+        return $actual === 'draft' && $previo !== '' ? $previo : $actual;
+    }
+
     // ─── Upsert único ─────────────────────────────────────────────────────────
 
     /**
@@ -357,6 +412,22 @@ class TPV_Sync_Product_Sync
             delete_post_meta($postId, self::A_PESO_META);
         }
 
+        // No publicable (plan B3, D19): fotos o ficha con licencia de un mayorista. Igual
+        // que la venta a peso: no se crea y, si ya estaba, pasa a BORRADOR sin borrarlo ni
+        // desenlazarlo. Un aviso sin el campo es «no lo sé» (API vieja): no quita una marca
+        // ya vista, como una descripción ausente no borra la de la tienda.
+        $noPublicable = array_key_exists('no_publicable', $p)
+            ? !empty($p['no_publicable'])
+            : ($postId && self::esNoPublicable($postId));
+        if ($noPublicable) {
+            if ($postId) {
+                $this->retirarNoPublicable($postId, $tpvId);
+            }
+            return 'no_publicable';
+        }
+        // Desmarcado: vuelve al estado de antes de la marca, no a «publicado» a ciegas.
+        $estadoActual = $postId ? self::estadoTrasNoPublicable($postId) : '';
+
         // La API devuelve precios ya con impuesto incluido (X-Price-Format: gross)
         $regularPrice = (float)$p['price'];
 
@@ -374,7 +445,7 @@ class TPV_Sync_Product_Sync
 
         $data = [
             'post_title'   => wp_strip_all_tags($p['name'] ?? ''),
-            'post_status'  => self::estadoPost($postId ? (string) get_post_status($postId) : '', (int) ($p['status'] ?? 0)),
+            'post_status'  => self::estadoPost($estadoActual, (int) ($p['status'] ?? 0)),
             'post_type'    => 'product',
         ];
         // Lo que no llega no se borra: una descripción vacía es «vaciarla»,
@@ -388,6 +459,11 @@ class TPV_Sync_Product_Sync
             $data['ID'] = $postId;
             wp_update_post($data);
             $created = false;
+            if (self::esNoPublicable($postId)) {
+                delete_post_meta($postId, self::NO_PUBLICABLE_META);
+                delete_post_meta($postId, self::NO_PUBLICABLE_ESTADO_META);
+                $this->log('ok', $tpvId, "El TPV ya no lo marca como no publicable: vuelve a «{$data['post_status']}» (post=$postId)");
+            }
         } else {
             $postId  = wp_insert_post($data);
             $created = true;
@@ -474,8 +550,9 @@ class TPV_Sync_Product_Sync
         );
         $this->applyReverseTaxClass($postId, $tpvTaxClassId, $tpvId);
 
-        // Imágenes: usar images[] (detalle) si disponible, sino image (listado)
-        if (!empty($p['images']) && is_array($p['images'])) {
+        // Imágenes: usar images[] (detalle) si viene, aunque venga vacía (sin las no
+        // publicables, la lista vacía también es una respuesta); si no, image (listado).
+        if (isset($p['images']) && is_array($p['images'])) {
             $this->sync_images($postId, $p['images'], $tpvId);
         } elseif (!empty($p['image'])) {
             $this->maybe_set_image($postId, $p['image'], $tpvId);
@@ -963,6 +1040,15 @@ class TPV_Sync_Product_Sync
                 $data = $details[$tpvId] ?? null;
                 if (!$data) { $stats['errors']++; continue; }
 
+                // No publicable: se salta como el de peso, pero antes se retira de la
+                // tienda. Marcar en el TPV no avisa a Woo: este repaso nocturno es la red.
+                if (!empty($data['no_publicable'])) {
+                    if ($postId) {
+                        $this->retirarNoPublicable($postId, $tpvId);
+                    }
+                    $stats['skipped']++;
+                    continue;
+                }
                 if (!empty($data['sold_by_weight'])) { $stats['skipped']++; continue; }
 
                 $tpvQty = (float)($data['quantity'] ?? 0);
@@ -1110,6 +1196,14 @@ class TPV_Sync_Product_Sync
             $postId = (int) $postId;
             $payload = $this->buildPushPayload($postId);
             if ($payload === null) { $stats['errors']++; continue; }
+            // Un no publicable ya enlazado va por la ruta singular: /products/bulk
+            // escribe siempre `status` (si falta, 1) y su borrador lo puso la caja.
+            if (self::esNoPublicable($postId) && (int) get_post_meta($postId, self::TPV_ID_META, true) > 0) {
+                $ok = $this->push_wc_product_to_tpv($postId);
+                if ($ok) { $stats['sent']++; } else { $stats['errors']++; }
+                $stats['fallback']++;
+                continue;
+            }
             // Los productos con variantes no caben en /products/bulk: ese
             // endpoint escribe solo sku/price/quantity/status y no toca
             // `options` (ver el UPDATE de ProductController::bulk). Tienen
@@ -2233,6 +2327,12 @@ class TPV_Sync_Product_Sync
             if (self::precioWebEsDeCaja($product)) {
                 unset($parche['price']);
             }
+            // El borrador de un no publicable lo puso la caja, no la web: no vuelve al
+            // TPV como status 0 (lo escondería en la caja y, al desmarcarlo, ya no
+            // volvería a publicarse en la tienda).
+            if (self::esNoPublicable($postId)) {
+                unset($parche['status']);
+            }
             $r = $this->api->patch("/products/$tpvId", $parche);
             // Si el TPV ya no tiene este producto (404 → type contiene
             // "not_found"), el meta local apunta a un mapeo huérfano: el TPV
@@ -2956,9 +3056,7 @@ class TPV_Sync_Product_Sync
     {
         if (has_post_thumbnail($postId)) return;
 
-        require_once ABSPATH . 'wp-admin/includes/media.php';
-        require_once ABSPATH . 'wp-admin/includes/file.php';
-        require_once ABSPATH . 'wp-admin/includes/image.php';
+        self::cargarMediosWp();
 
         $tmpFile = $this->download_image($imageUrl);
         if (!$tmpFile) return;
@@ -3011,9 +3109,15 @@ class TPV_Sync_Product_Sync
      */
     private function sync_images(int $postId, array $images, int $tpvId): void
     {
-        require_once ABSPATH . 'wp-admin/includes/media.php';
-        require_once ABSPATH . 'wp-admin/includes/file.php';
-        require_once ABSPATH . 'wp-admin/includes/image.php';
+        self::cargarMediosWp();
+
+        // Lo que la caja manda ahora, por URL. La API ya no sirve las fotos no
+        // publicables ni las de ruta rara (plan B3, Tarea 13): dejan de venir.
+        $vienen = [];
+        foreach ($images as $img) {
+            $url = (string) ($img['url'] ?? '');
+            if ($url !== '') $vienen[$url] = true;
+        }
 
         // URLs de la caja ya importadas en este post (un adjunto puede tener
         // varias: la caja guarda cada subida de la misma foto con otro nombre).
@@ -3082,11 +3186,50 @@ class TPV_Sync_Product_Sync
 
         if ($mainId) {
             set_post_thumbnail($postId, $mainId);
+        } else {
+            // Sin principal que poner: la destacada que trajo la caja y ya no viene
+            // (no publicable, borrada o con ruta rara) se quita; una subida a mano en
+            // Woo se queda. El adjunto no se borra (wp_delete_attachment es de B4).
+            $destacada = (int) get_post_thumbnail_id($postId);
+            if (self::vinoDeLaCaja($destacada) && !self::sigueViniendo($destacada, $vienen)) {
+                delete_post_thumbnail($postId);
+            }
+        }
+
+        // Galería: las de la caja en su orden y, detrás, las que ya tenía y se quedan:
+        // las subidas a mano en Woo y las de la caja que siguen viniendo (aunque esta
+        // vez no se hayan podido traer). Las que trajo la caja y ya no vienen salen de
+        // la galería y siguen en la biblioteca de medios.
+        $actual = (string) get_post_meta($postId, '_product_image_gallery', true);
+        foreach (array_filter(array_map('intval', explode(',', $actual))) as $g) {
+            if (!self::vinoDeLaCaja($g) || self::sigueViniendo($g, $vienen)) {
+                $galleryIds[] = $g;
+            }
         }
         $galleryIds = self::galeriaSinRepetir($galleryIds, (int) ($mainId ?: get_post_thumbnail_id($postId)));
-        if (!empty($galleryIds)) {
+        if (implode(',', $galleryIds) !== $actual) {
             update_post_meta($postId, '_product_image_gallery', implode(',', $galleryIds));
         }
+    }
+
+    /** ¿Sigue mandando la caja alguna de las URL con que trajo este adjunto? */
+    private static function sigueViniendo(int $attId, array $vienen): bool
+    {
+        foreach ((array) get_post_meta($attId, '_tpv_image_url', false) as $u) {
+            if (isset($vienen[(string) $u])) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Las funciones de medios de WordPress (media_handle_sideload, wp_tempnam…) viven
+     * en wp-admin/includes, que fuera del admin (avisos, cron) no está cargado.
+     */
+    private static function cargarMediosWp(): void
+    {
+        if (!function_exists('media_handle_sideload')) require_once ABSPATH . 'wp-admin/includes/media.php';
+        if (!function_exists('wp_tempnam')) require_once ABSPATH . 'wp-admin/includes/file.php';
+        if (!function_exists('wp_generate_attachment_metadata')) require_once ABSPATH . 'wp-admin/includes/image.php';
     }
 
     /** ¿Este adjunto lo trajo la caja? (sync_images le apunta la URL de origen) */
@@ -3546,6 +3689,12 @@ class TPV_Sync_Product_Sync
         return get_post_meta($postId, self::A_PESO_META, true) === '1';
     }
 
+    /** ¿Lo tiene Woo retirado porque el TPV lo marca como no publicable? (lo marca retirarNoPublicable) */
+    public static function esNoPublicable(int $postId): bool
+    {
+        return get_post_meta($postId, self::NO_PUBLICABLE_META, true) === '1';
+    }
+
     private function log(string $status, int $resourceId, string $msg): void
     {
         global $wpdb;
@@ -3730,13 +3879,18 @@ class TPV_Sync_Product_Sync
                     if ($dryRun) continue;
                     $matchPostId = (int) $wcByModel[$model]['post_id'];
                     update_post_meta($matchPostId, '_tpv_product_id', $tpvId);
+                    // Enlazado a un producto que el TPV no deja publicar: fuera de la tienda.
+                    if (!empty($p['no_publicable'])) {
+                        $this->retirarNoPublicable($matchPostId, $tpvId);
+                    }
                     continue;
                 }
 
                 // Producto que solo está en el TPV. Solo se trae a Woo si el
                 // catálogo lo manda el TPV; si manda Woo, se deja quieto (y
-                // nunca se borra en ninguno de los dos lados).
-                if ($politica['catalogo'] !== 'tpv') {
+                // nunca se borra en ninguno de los dos lados). Uno que el TPV
+                // no deja publicar no se trae nunca (decidir() y upsert).
+                if ($politica['catalogo'] !== 'tpv' || !empty($p['no_publicable'])) {
                     $stats['skipped']++;
                     continue;
                 }
@@ -3781,6 +3935,8 @@ class TPV_Sync_Product_Sync
                 'quantity'    => (float) ($p['quantity'] ?? 0),
                 // decidir() no reconcilia lo que el TPV vende a peso (stock en kg).
                 'sold_by_weight' => !empty($p['sold_by_weight']),
+                // Ni lo que no deja publicar (D19): no se crea ni se corrige.
+                'no_publicable'  => !empty($p['no_publicable']),
             ];
             // El precio no se compara: (a) en un variable, porque el padre de
             // Woo no tiene (vacío = 0) y siempre «discrepaba», empujando el
@@ -3802,6 +3958,32 @@ class TPV_Sync_Product_Sync
             }
 
             $decision = TPV_Sync_Reconciler::decidir($fotoWc, $fotoTpv, $politica);
+
+            // decidir() no crea ni corrige un no publicable; si Woo aún lo enseña, se
+            // retira (pasa a borrador), como en cualquier otro camino que vea la marca.
+            // La simulación lo cuenta y lo enseña: aplicar no cambia nada que no se viera.
+            if ($fotoTpv['no_publicable']) {
+                $loEnsena = !in_array((string) get_post_status($postId), ['draft', 'trash'], true);
+                if ($loEnsena) {
+                    $stats['divergentes']++;
+                    if (count($stats['ejemplos']) < 10) {
+                        $stats['ejemplos'][] = [
+                            'tpv_id'   => $tpvId,
+                            'post_id'  => $postId,
+                            'nombre'   => $fotoWc['name'],
+                            'catalogo' => __('no publicable en el TPV: pasa a borrador', 'tpv-sync'),
+                            'stock'    => $decision['stock']['motivo'],
+                        ];
+                    }
+                }
+                if (!$dryRun) {
+                    $this->retirarNoPublicable($postId, $tpvId);
+                    if ($loEnsena) {
+                        $stats['fixed']++;
+                    }
+                }
+                continue;
+            }
 
             if ($decision['discrepa']) {
                 $stats['divergentes']++;

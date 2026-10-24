@@ -339,3 +339,9 @@ msgstr "La conexión con el TPV no tiene el permiso categories:write: las catego
 
 msgid "Categorías sin pareja o sin permiso"
 msgstr "Categorías sin pareja o sin permiso"
+
+msgid "no publicable en el TPV"
+msgstr "no publicable en el TPV"
+
+msgid "no publicable en el TPV: pasa a borrador"
+msgstr "no publicable en el TPV: pasa a borrador"

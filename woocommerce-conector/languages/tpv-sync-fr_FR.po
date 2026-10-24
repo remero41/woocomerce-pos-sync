@@ -339,3 +339,9 @@ msgstr "La connexion au TPV n'a pas l'autorisation categories:write : les catég
 
 msgid "Categorías sin pareja o sin permiso"
 msgstr "Catégories sans équivalent ou sans autorisation"
+
+msgid "no publicable en el TPV"
+msgstr "non publiable dans le TPV"
+
+msgid "no publicable en el TPV: pasa a borrador"
+msgstr "non publiable dans le TPV : passe en brouillon"

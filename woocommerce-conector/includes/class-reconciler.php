@@ -114,6 +114,14 @@ class TPV_Sync_Reconciler
             return ['discrepa' => false, 'catalogo' => $nada, 'stock' => $nada];
         }
 
+        // No publicable (plan B3, D19): fotos o ficha con licencia de un mayorista. Ni se
+        // crea en Woo ni se corrige en ningún sentido; quien lo ve lo retira de la tienda
+        // (TPV_Sync_Product_Sync::retirarNoPublicable).
+        if (!empty($tpv['no_publicable'])) {
+            $nada = ['accion' => 'nada', 'campos' => [], 'motivo' => __('no publicable en el TPV', 'tpv-sync')];
+            return ['discrepa' => false, 'catalogo' => $nada, 'stock' => $nada];
+        }
+
         // Solo en un lado: se puede crear en el otro, nunca borrar. Borrar por
         // ausencia es como se pierden catalogos enteros cuando el que "falta"
         // en realidad estaba despublicado o fuera del filtro de la consulta.
