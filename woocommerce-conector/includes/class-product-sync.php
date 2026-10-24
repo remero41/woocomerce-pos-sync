@@ -37,7 +37,7 @@ class TPV_Sync_Product_Sync
      */
     const NO_PUBLICABLE_META        = '_tpv_no_publicable';
     const NO_PUBLICABLE_ESTADO_META = '_tpv_no_publicable_estado';
-    /** Fotos de la caja que sync_images dejó puestas en este producto: solo esas se le quitan. */
+    /** Rutas de foto que la caja ha mandado para este producto: solo una foto con una de ellas (o de sus adjuntos) se le quita. */
     const FOTOS_CAJA_META           = '_tpv_fotos_caja';
     const TPV_CUSTOMER_META     = '_tpv_customer_id';
 
@@ -319,7 +319,9 @@ class TPV_Sync_Product_Sync
         $antes = $GLOBALS['tpv_sync_skip_wc_product_push'] ?? false;
         $GLOBALS['tpv_sync_skip_wc_product_push'] = true;
         try {
-            update_post_meta($postId, self::TPV_ID_META, $tpvId);
+            if ($tpvId > 0) {
+                update_post_meta($postId, self::TPV_ID_META, $tpvId);
+            }
             update_post_meta($postId, self::NO_PUBLICABLE_META, '1');
             $estado = (string) get_post_status($postId);
             if ($estado !== 'draft' && $estado !== 'trash') {
@@ -2146,8 +2148,14 @@ class TPV_Sync_Product_Sync
         // Marcado como no publicable: su catálogo lo manda el TPV. La copia de Woo está
         // congelada (upsert no la refresca) y no vuelve a la caja por ningún camino
         // (edición, volcado, CLI, autocurado, alta de un duplicado). El stock, sí:
-        // va por push_wc_stock_change.
-        if (self::esNoPublicable($postId)) return false;
+        // va por push_wc_stock_change. Si alguien lo ha publicado a mano, se deshace al
+        // guardar, en local y sin llamar a la caja, en todos los modos.
+        if (self::esNoPublicable($postId)) {
+            if (!in_array((string) get_post_status($postId), ['draft', 'trash'], true)) {
+                $this->retirarNoPublicable($postId, (int) get_post_meta($postId, self::TPV_ID_META, true));
+            }
+            return false;
+        }
 
         // Modo Principal: si manda el TPV, los cambios iniciados en WC sobre
         // productos sincronizados deben REVERTIRSE (re-leer desde el TPV) y
@@ -3139,18 +3147,19 @@ class TPV_Sync_Product_Sync
         }
 
         // Fotos de la caja que el producto ya tiene, por ruta (un adjunto puede tener
-        // varias: la caja guarda cada subida de la misma foto con otro nombre). Primero
-        // las adjuntas a él; después su destacada y su galería.
+        // varias: la caja guarda cada subida de la misma foto con otro nombre). Mandan
+        // su destacada y su galería ACTUALES; después, sus otros adjuntos. Así una ruta
+        // resuelve a lo que el producto ya enseña aunque sea el adjunto de otro post con
+        // la misma ruta (la base lo buscaba con un LIMIT 1 global), y no sale repetida.
         $adjuntas = [];
         foreach (get_attached_media('image', $postId) as $att) {
             $adjuntas[] = (int) $att->ID;
         }
         $galeriaActual = (string) get_post_meta($postId, '_product_image_gallery', true);
         $porRuta = [];
-        foreach (array_merge($adjuntas, [(int) get_post_thumbnail_id($postId)], explode(',', $galeriaActual)) as $id) {
-            if ((int) $id <= 0) continue;
-            foreach ((array) get_post_meta((int) $id, '_tpv_image_url', false) as $u) {
-                if ((string) $u !== '') $porRuta[self::rutaDeImagen((string) $u)] ??= (int) $id;
+        foreach (array_merge([(int) get_post_thumbnail_id($postId)], explode(',', $galeriaActual), $adjuntas) as $id) {
+            foreach (self::rutasDe((int) $id) as $ruta) {
+                $porRuta[$ruta] ??= (int) $id;
             }
         }
 
@@ -3207,19 +3216,29 @@ class TPV_Sync_Product_Sync
             if ($esPrincipal) $mainId = $attId;
             else $galleryIds[] = $attId;
         }
-        $resueltas = array_values(array_filter(array_merge([(int) $mainId], $galleryIds)));
 
-        // Solo se quita lo que la caja trajo para ESTE producto (lo que sync_images le
-        // puso; en un producto que aún no lo tiene apuntado, las fotos de la caja
-        // adjuntas a él) y ya no viene, SIEMPRE, aunque la descarga de otra haya fallado:
-        // es una barrera legal (D19) y la API ya no la sirve. Una que sigue viniendo se
-        // queda aunque no se haya podido traer. Una foto de la caja que el comerciante
-        // eligió a mano para otro producto, o una subida en Woo, no se toca. El adjunto
-        // no se borra nunca (wp_delete_attachment es de B4).
+        // Rutas de la caja de ESTE producto: las que trae ahora, las que trajo antes
+        // (_tpv_fotos_caja) y las de sus propios adjuntos. Una foto de su destacada o su
+        // galería con una de esas rutas la trajo la caja para él, aunque el adjunto sea
+        // de otro post; si ya no viene, sale SIEMPRE, aunque la descarga de otra haya
+        // fallado: es una barrera legal (D19) y la API ya no la sirve. Una que sigue
+        // viniendo se queda aunque no se haya podido traer. Una foto cuya ruta la caja
+        // nunca trajo para él (de la caja elegida a mano para otro producto, o subida en
+        // Woo) no se toca. El adjunto no se borra nunca (wp_delete_attachment es de B4).
         $apuntadas = get_post_meta($postId, self::FOTOS_CAJA_META, true);
-        $traidas = is_array($apuntadas) ? array_map('intval', $apuntadas) : $adjuntas;
-        $retirable = fn (int $id): bool => in_array($id, $traidas, true) && self::vinoDeLaCaja($id)
-            && !self::sigueViniendo($id, $vienen);
+        $trajo = $vienen;
+        foreach (is_array($apuntadas) ? $apuntadas : [] as $ruta) {
+            if (is_string($ruta) && $ruta !== '') $trajo[$ruta] = true;
+        }
+        $propias = $trajo;
+        foreach ($adjuntas as $id) {
+            foreach (self::rutasDe($id) as $ruta) $propias[$ruta] = true;
+        }
+        $retirable = static function (int $id) use ($propias, $vienen): bool {
+            $rutas = self::rutasDe($id);
+            return $rutas !== [] && array_intersect_key(array_flip($rutas), $propias) !== []
+                && !self::sigueViniendo($id, $vienen);
+        };
 
         if ($mainId) {
             set_post_thumbnail($postId, $mainId);
@@ -3246,17 +3265,23 @@ class TPV_Sync_Product_Sync
             update_post_meta($postId, '_product_image_gallery', implode(',', $galleryIds));
         }
 
-        // Lo que la caja deja puesto en este producto, para la próxima vez.
-        $nuevas = [];
-        foreach (array_merge([$destacadaFinal], $galleryIds) as $id) {
-            if ($id > 0 && self::vinoDeLaCaja($id)
-                && (in_array($id, $resueltas, true) || in_array($id, $traidas, true))) {
-                $nuevas[] = $id;
-            }
-        }
-        if (!is_array($apuntadas) || $nuevas !== $traidas) {
+        // Las rutas que la caja trae o trajo para este producto, para la próxima vez.
+        $nuevas = array_map('strval', array_keys($trajo));
+        sort($nuevas);
+        if ($nuevas !== $apuntadas) {
             update_post_meta($postId, self::FOTOS_CAJA_META, $nuevas);
         }
+    }
+
+    /** Rutas de la caja de un adjunto (las de sus `_tpv_image_url`); [] si no la trajo la caja. */
+    private static function rutasDe(int $attId): array
+    {
+        if ($attId <= 0) return [];
+        $rutas = [];
+        foreach ((array) get_post_meta($attId, '_tpv_image_url', false) as $u) {
+            if ((string) $u !== '') $rutas[] = self::rutaDeImagen((string) $u);
+        }
+        return $rutas;
     }
 
     /** ¿Sigue mandando la caja alguna de las rutas con que trajo este adjunto? */

@@ -165,6 +165,22 @@ function np_tienda_con_fotos(): void
     $GLOBALS['__wp_adjuntos'][8310] = [81, 82, 83, 90];
 }
 
+/**
+ * 8310 enlazado al 502. Su galería apunta a la 82 (X): la trajo la caja para OTRO post
+ * (8999) con la misma ruta que la 84 (Y), la propia de 8310. Destacada 81, propia.
+ */
+function np_fotos_compartidas(): void
+{
+    np_tienda();
+    $GLOBALS['__wp_meta'][8310] += ['_tpv_product_id' => 502, '_product_image_gallery' => '82'];
+    $GLOBALS['__wp_meta'][82] = ['_tpv_image_url' => NP_IMG . 'g1.jpg'];
+    $GLOBALS['__wp_meta'][81] = ['_tpv_image_url' => NP_IMG . 'principal.jpg'];
+    $GLOBALS['__wp_meta'][84] = ['_tpv_image_url' => NP_IMG . 'g1.jpg'];
+    $GLOBALS['__wp_thumbs'][8310] = 81;
+    $GLOBALS['__wp_adjuntos'][8310] = [81, 84];
+    $GLOBALS['__wp_adjuntos'][8999] = [82];
+}
+
 /** Lo que manda GET /products/{id} en `images`: principal primero, sin las marcadas. */
 function np_imagenes(array $fotos, bool $conPrincipal = true): array
 {
@@ -686,6 +702,82 @@ function run_no_publicable_tests(WooTestRunner $t): void
         });
     }
 
+    // ── Fotos compartidas por ruta con otro post (ronda 2) ──────────────────────────
+    // La base buscaba el adjunto de una URL ya importada con un LIMIT 1 global (en MySQL,
+    // el más antiguo): la galería o la destacada de un producto podía apuntar al adjunto
+    // X de otro post (otro producto, el de antes de un reset, un duplicado) aunque el
+    // producto tuviera su propio adjunto Y con la misma ruta.
+
+    $t->test('A: sin marca, la galería que apunta al adjunto de otro post no sale con la foto repetida', function ($t) {
+        np_fotos_compartidas();
+        $sync = np_sync();
+        $sync->upsert(tpv_producto(502, ['images' => np_imagenes(['principal.jpg', 'g1.jpg'])]));
+        $t->assertEquals(81, $GLOBALS['__wp_thumbs'][8310] ?? 0);
+        $t->assertEquals('82', np_meta(8310, '_product_image_gallery'), 'la misma foto dos veces');
+        $sync->upsert(tpv_producto(502, ['images' => np_imagenes(['principal.jpg', 'g1.jpg'])]));
+        $t->assertEquals('82', np_meta(8310, '_product_image_gallery'), 'segundo aviso');
+    });
+
+    $t->test('B: una foto marcada sale de la galería aunque el adjunto sea de otro post', function ($t) {
+        np_fotos_compartidas();
+        $sync = np_sync();
+        $sync->upsert(tpv_producto(502, ['images' => np_imagenes(['principal.jpg'])]));   // g1 marcada
+        $t->assertEquals('', (string) np_meta(8310, '_product_image_gallery'), 'la foto marcada sigue en la galería');
+        $sync->upsert(tpv_producto(502, ['images' => np_imagenes(['principal.jpg'])]));
+        $t->assertEquals('', (string) np_meta(8310, '_product_image_gallery'), 'segundo aviso');
+        $t->assertEquals(NP_IMG . 'g1.jpg', np_meta(82, '_tpv_image_url'), 'el adjunto no se borra (B4)');
+    });
+
+    $t->test('B2: marcada después de un aviso sin marca: sale igual', function ($t) {
+        np_fotos_compartidas();
+        $sync = np_sync();
+        $sync->upsert(tpv_producto(502, ['images' => np_imagenes(['principal.jpg', 'g1.jpg'])]));   // sin marca
+        $sync->upsert(tpv_producto(502, ['images' => np_imagenes(['principal.jpg'])]));             // g1 marcada
+        $t->assertEquals('', (string) np_meta(8310, '_product_image_gallery'), 'la foto marcada sigue en la galería');
+    });
+
+    $t->test('D: la destacada es el adjunto de otro post y la principal se marca ⇒ la destacada sale', function ($t) {
+        np_tienda();
+        $GLOBALS['__wp_meta'][8310] += ['_tpv_product_id' => 502, '_product_image_gallery' => '82'];
+        $GLOBALS['__wp_meta'][80] = ['_tpv_image_url' => NP_IMG . 'principal.jpg'];   // X, de otro post
+        $GLOBALS['__wp_meta'][81] = ['_tpv_image_url' => NP_IMG . 'principal.jpg'];   // Y, de 8310
+        $GLOBALS['__wp_meta'][82] = ['_tpv_image_url' => NP_IMG . 'g1.jpg'];
+        $GLOBALS['__wp_thumbs'][8310] = 80;
+        $GLOBALS['__wp_adjuntos'][8310] = [81, 82];
+        np_sync()->upsert(tpv_producto(502, ['image' => null, 'images' => np_imagenes(['g1.jpg'], false)]));
+        $t->assertEquals(0, $GLOBALS['__wp_thumbs'][8310] ?? 0, 'la principal marcada sigue de destacada');
+        $t->assertEquals('82', np_meta(8310, '_product_image_gallery'));
+    });
+
+    $t->test('C: con «manda el TPV», publicar a mano un marcado se deshace al guardar, sin llamar a la caja', function ($t) {
+        np_tienda();
+        $GLOBALS['__wp_options']['tpv_sync_principal'] = 'tpv';
+        try {
+            $GLOBALS['__wp_meta'][8310] += ['_tpv_product_id' => 502];
+            $api = new ApiNoPublicableFalsa([502 => tpv_producto(502, ['no_publicable' => true])]);
+            $sync = new TPV_Sync_Product_Sync($api);
+            $sync->upsert(tpv_producto(502, ['no_publicable' => true]));
+            $GLOBALS['__wp_posts'][8310]->post_status = 'publish';   // el comerciante lo publica a mano
+            $api->llamadas = [];
+            $t->assertEquals(false, $sync->push_wc_product_to_tpv(8310));   // woocommerce_update_product
+            $t->assertEquals('draft', estado_post(8310), 'publicado a mano y sigue publicado');
+            $t->assertEquals([], $api->llamadas, 'llamó a la caja');
+            $t->assertEquals('publish', np_meta(8310, '_tpv_no_publicable_estado'), 'manda la última decisión');
+        } finally {
+            $GLOBALS['__wp_options']['tpv_sync_principal'] = '';
+        }
+    });
+
+    $t->test('C: en el modo por defecto, también; y un marcado sin enlace no gana un enlace «0»', function ($t) {
+        np_tienda();
+        $GLOBALS['__wp_meta'][8308] += ['_tpv_no_publicable' => '1'];   // marcado y sin enlace (tras un reset)
+        $api = new ApiNoPublicableFalsa();
+        (new TPV_Sync_Product_Sync($api))->push_wc_product_to_tpv(8308);
+        $t->assertEquals('draft', estado_post(8308));
+        $t->assertEquals(null, np_meta(8308, '_tpv_product_id'), 'se inventó un enlace');
+        $t->assertEquals([], $api->llamadas);
+    });
+
     $t->test('R7: una foto de la caja elegida a mano para otro producto se queda en su galería', function ($t) {
         np_tienda_con_fotos();
         $GLOBALS['__wp_meta'][8306]['_product_image_gallery'] = '82';   // la 82 la trajo la caja para el 502
@@ -696,7 +788,7 @@ function run_no_publicable_tests(WooTestRunner $t): void
         // Lo que la caja pone en un producto sí queda apuntado como suyo, y sale al dejar de venir.
         $sync = np_sync();
         $sync->upsert(tpv_producto(900, ['images' => np_imagenes(['g1.jpg'], false)]));
-        $t->assertEquals([82], np_meta(8306, '_tpv_fotos_caja'));
+        $t->assertEquals(['catalog/prov/g1.jpg'], np_meta(8306, '_tpv_fotos_caja'), 'la ruta queda apuntada como suya');
         $sync->upsert(tpv_producto(900, ['images' => []]));
         $t->assertEquals('', np_meta(8306, '_product_image_gallery'), 'la marcada sigue en el producto al que la caja la puso');
     });
