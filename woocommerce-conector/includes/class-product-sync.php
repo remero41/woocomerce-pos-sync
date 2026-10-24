@@ -3085,22 +3085,17 @@ class TPV_Sync_Product_Sync
 
     /**
      * Descarga una imagen via wp_remote_get (evita las restricciones de download_url).
-     * Devuelve la ruta al archivo temporal o null si falla. $pasajero dice si el fallo
-     * es de los que se arreglan solos (sin respuesta, 429 o 5xx): un 4xx, un cuerpo
-     * vacío o un tipo que no es imagen fallarán igual la próxima vez.
+     * Devuelve la ruta al archivo temporal o null si falla.
      */
-    private function download_image(string $url, ?bool &$pasajero = null): ?string
+    private function download_image(string $url): ?string
     {
-        $pasajero = false;
         $response = wp_remote_get($url, ['timeout' => 15, 'sslverify' => true]);
         if (is_wp_error($response)) {
-            $pasajero = true;
             error_log("tpv-sync: download_image failed for $url — " . $response->get_error_message());
             return null;
         }
         $code = wp_remote_retrieve_response_code($response);
         if ($code !== 200) {
-            $pasajero = (int) $code === 0 || (int) $code === 429 || (int) $code >= 500;
             error_log("tpv-sync: download_image HTTP $code for $url");
             return null;
         }
@@ -3162,10 +3157,6 @@ class TPV_Sync_Product_Sync
 
         $galleryIds = [];
         $mainId     = null;
-        // Una foto que viene y no se pudo traer por un fallo pasajero puede ser la misma
-        // que ya tiene con otro nombre: esta vez no se quita ninguna del mismo sitio.
-        $falloPrincipal = false;
-        $falloGaleria   = false;
 
         foreach ($images as $img) {
             $url = (string) ($img['url'] ?? '');
@@ -3180,15 +3171,8 @@ class TPV_Sync_Product_Sync
                 continue;
             }
 
-            $pasajero = false;
-            $tmpFile = $this->download_image($url, $pasajero);
-            if (!$tmpFile) {
-                if ($pasajero) {
-                    if ($esPrincipal) $falloPrincipal = true;
-                    else $falloGaleria = true;
-                }
-                continue;
-            }
+            $tmpFile = $this->download_image($url);
+            if (!$tmpFile) continue;
 
             $huella = (string) md5_file($tmpFile);
             if (isset($porContenido[$huella])) {
@@ -3219,9 +3203,11 @@ class TPV_Sync_Product_Sync
 
         // Solo se quita lo que la caja trajo para ESTE producto (lo que sync_images le
         // puso; en un producto que aún no lo tiene apuntado, las fotos de la caja
-        // adjuntas a él) y ya no viene. Una foto de la caja que el comerciante eligió a
-        // mano para otro producto, o una subida en Woo, no se toca. El adjunto no se
-        // borra nunca (wp_delete_attachment es de B4).
+        // adjuntas a él) y ya no viene, SIEMPRE, aunque la descarga de otra haya fallado:
+        // es una barrera legal (D19) y la API ya no la sirve. Una que sigue viniendo se
+        // queda aunque no se haya podido traer. Una foto de la caja que el comerciante
+        // eligió a mano para otro producto, o una subida en Woo, no se toca. El adjunto
+        // no se borra nunca (wp_delete_attachment es de B4).
         $apuntadas = get_post_meta($postId, self::FOTOS_CAJA_META, true);
         $traidas = is_array($apuntadas) ? array_map('intval', $apuntadas) : $adjuntas;
         $retirable = fn (int $id): bool => in_array($id, $traidas, true) && self::vinoDeLaCaja($id)
@@ -3231,32 +3217,20 @@ class TPV_Sync_Product_Sync
             set_post_thumbnail($postId, $mainId);
         } else {
             // Sin principal que poner: la destacada que la caja trajo y ya no viene (no
-            // publicable, borrada o con ruta rara) se quita, salvo que la principal que
-            // manda no se haya podido traer: entonces se espera al siguiente aviso.
+            // publicable, borrada o con ruta rara) se quita.
             $destacada = (int) get_post_thumbnail_id($postId);
             if ($retirable($destacada)) {
-                if ($falloPrincipal) {
-                    $this->log('warn', $tpvId, "Foto principal sin cambiar: la de la caja no se pudo traer (post=$postId)");
-                } else {
-                    delete_post_thumbnail($postId);
-                }
+                delete_post_thumbnail($postId);
             }
         }
 
         // Galería: las de la caja en su orden y, detrás, las que ya tenía y se quedan.
         // Las que trajo la caja y ya no vienen salen de la galería y siguen en la
-        // biblioteca de medios (salvo que alguna que viene no se haya podido traer).
-        $aplazadas = 0;
+        // biblioteca de medios.
         foreach (array_filter(array_map('intval', explode(',', $galeriaActual))) as $g) {
             if (!$retirable($g)) {
                 $galleryIds[] = $g;
-            } elseif ($falloGaleria) {
-                $galleryIds[] = $g;
-                $aplazadas++;
             }
-        }
-        if ($aplazadas > 0) {
-            $this->log('warn', $tpvId, "Galería sin limpiar ($aplazadas fotos): alguna foto de la caja no se pudo traer (post=$postId)");
         }
         $destacadaFinal = (int) ($mainId ?: get_post_thumbnail_id($postId));
         $galleryIds = self::galeriaSinRepetir($galleryIds, $destacadaFinal);

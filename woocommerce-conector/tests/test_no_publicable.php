@@ -582,36 +582,62 @@ function run_no_publicable_tests(WooTestRunner $t): void
         $t->assertEquals('82,90', np_meta(8310, '_product_image_gallery'), 'g1 sigue; g2 (marcada) sale');
     });
 
-    $t->test('R4: si una foto que viene falla por la red, esta vez no se quita la de su sitio', function ($t) {
+    $t->test('foto marcada que deja de venir + otra que falla por la red ⇒ la marcada sale y la que sigue viniendo se queda', function ($t) {
         np_tienda_con_fotos();
+        $otra = 'https://caja-nueva.example/image/catalog/prov/';
         $GLOBALS['__http']['catalogoFalla'] = true;    // el doble HTTP contesta 503 a las rutas «…/products»
         $imgs = [
-            ['url' => NP_IMG . 'nueva-principal/products', 'is_main' => true,  'sort_order' => 0],
-            ['url' => NP_IMG . 'nueva-g/products',         'is_main' => false, 'sort_order' => 1],
+            ['url' => $otra . 'principal.jpg',   'is_main' => true,  'sort_order' => 0],
+            ['url' => $otra . 'g1.jpg',          'is_main' => false, 'sort_order' => 1],   // sigue viniendo (otro dominio)
+            ['url' => $otra . 'nueva/products',  'is_main' => false, 'sort_order' => 2],   // nueva: la descarga falla
+        ];                                                                                 // g2, marcada: ya no viene
+        try {
+            np_sync()->upsert(tpv_producto(502, ['images' => $imgs]));
+        } finally {
+            unset($GLOBALS['__http']['catalogoFalla']);
+        }
+        $t->assertEquals('82,90', np_meta(8310, '_product_image_gallery'), 'la marcada sigue publicada por un 503 de otra');
+        $t->assertEquals(81, $GLOBALS['__wp_thumbs'][8310] ?? 0);
+        $t->assertEquals(NP_IMG . 'g1.jpg', np_meta(82, '_tpv_image_url'), 'la que sigue viniendo conserva su adjunto');
+    });
+
+    $t->test('cambio de dominio con la misma ruta y una descarga fallida ⇒ no se quita nada', function ($t) {
+        np_tienda_con_fotos();
+        $otra = 'https://caja-nueva.example/image/catalog/prov/';
+        $GLOBALS['__http']['catalogoFalla'] = true;
+        $imgs = [
+            ['url' => $otra . 'principal.jpg',  'is_main' => true,  'sort_order' => 0],
+            ['url' => $otra . 'g1.jpg',         'is_main' => false, 'sort_order' => 1],
+            ['url' => $otra . 'g2.jpg',         'is_main' => false, 'sort_order' => 2],
+            ['url' => $otra . 'nueva/products', 'is_main' => false, 'sort_order' => 3],
         ];
         try {
             np_sync()->upsert(tpv_producto(502, ['images' => $imgs]));
         } finally {
             unset($GLOBALS['__http']['catalogoFalla']);
         }
-        $t->assertEquals(81, $GLOBALS['__wp_thumbs'][8310] ?? 0, 'se quita la destacada por un 503');
-        $t->assertEquals('82,90,83', np_meta(8310, '_product_image_gallery'));
+        $t->assertEquals(81, $GLOBALS['__wp_thumbs'][8310] ?? 0, 'se quitó la destacada');
+        $t->assertEquals('82,83,90', np_meta(8310, '_product_image_gallery'), 'se quitó una foto que sigue viniendo');
     });
 
-    $t->test('un fallo que no se arregla solo (404) no frena la retirada', function ($t) {
+    $t->test('una destacada de la caja cuya ruta sigue viniendo (ahora en la galería) se queda', function ($t) {
         np_tienda_con_fotos();
-        $GLOBALS['__http']['health'] = 404;            // el doble HTTP contesta 404 a las rutas «…/health»
-        $GLOBALS['__http']['capacidades'] = [];
-        $imgs = [
-            ['url' => NP_IMG . 'principal.jpg',  'is_main' => true,  'sort_order' => 0],
-            ['url' => NP_IMG . 'rota/health',    'is_main' => false, 'sort_order' => 1],
-        ];
+        np_sync()->upsert(tpv_producto(502, ['image' => null,
+            'images' => np_imagenes(['principal.jpg', 'g1.jpg', 'g2.jpg'], false)]));
+        $t->assertEquals(81, $GLOBALS['__wp_thumbs'][8310] ?? 0, 'se quitó una foto que la caja sigue mandando');
+    });
+
+    $t->test('la principal cambia de ruta y su descarga falla ⇒ la destacada vieja sale igual (la barrera manda)', function ($t) {
+        np_tienda_con_fotos();
+        $GLOBALS['__http']['catalogoFalla'] = true;
         try {
-            np_sync()->upsert(tpv_producto(502, ['images' => $imgs]));
+            np_sync()->upsert(tpv_producto(502, ['images' => [
+                ['url' => NP_IMG . 'nueva-principal/products', 'is_main' => true, 'sort_order' => 0]]]));
         } finally {
-            unset($GLOBALS['__http']['health'], $GLOBALS['__http']['capacidades']);
+            unset($GLOBALS['__http']['catalogoFalla']);
         }
-        $t->assertEquals('90', np_meta(8310, '_product_image_gallery'), 'las marcadas siguen publicadas por una foto rota');
+        $t->assertEquals(0, $GLOBALS['__wp_thumbs'][8310] ?? 0, 'una principal que ya no viene sigue de destacada');
+        $t->assertEquals('90', np_meta(8310, '_product_image_gallery'));
     });
 
     $t->test('R7: una foto de la caja elegida a mano para otro producto se queda en su galería', function ($t) {
