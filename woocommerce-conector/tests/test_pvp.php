@@ -27,6 +27,8 @@ function pvp_http(string $metodo, string $url, array $args): array
 {
     $GLOBALS['__http']['peticiones'][] = ['metodo' => $metodo, 'url' => $url,
         'headers' => $args['headers'] ?? [], 'body' => json_decode((string) ($args['body'] ?? ''), true)];
+    // Respuesta fijada por un test para una URL concreta (código, cuerpo y cabeceras).
+    if (isset($GLOBALS['__http']['respuestas'][$url])) { return $GLOBALS['__http']['respuestas'][$url]; }
     $ruta = (string) parse_url($url, PHP_URL_PATH);
     if (str_ends_with($ruta, '/auth/token')) { return ['code' => 200, 'body' => ['access_token' => 't', 'expires_in' => 3600]]; }
     if (str_ends_with($ruta, '/health')) {
@@ -52,7 +54,7 @@ if (!function_exists('wp_remote_get'))     { function wp_remote_get($u, $a = [])
 if (!function_exists('wp_remote_request')) { function wp_remote_request($u, $a = []) { return pvp_http($a['method'] ?? 'GET', $u, $a); } }
 if (!function_exists('wp_remote_retrieve_body')) { function wp_remote_retrieve_body($r) { return json_encode($r['body'] ?? []); } }
 if (!function_exists('wp_remote_retrieve_response_code')) { function wp_remote_retrieve_response_code($r) { return $r['code'] ?? 0; } }
-if (!function_exists('wp_remote_retrieve_header')) { function wp_remote_retrieve_header($r, $h) { return ''; } }
+if (!function_exists('wp_remote_retrieve_header')) { function wp_remote_retrieve_header($r, $h) { return $r['headers'][strtolower($h)] ?? ''; } }
 
 // ─── WooCommerce fiscal en memoria ────────────────────────────────────────────
 if (!class_exists('WC_Tax')) {

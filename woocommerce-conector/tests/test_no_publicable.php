@@ -132,6 +132,21 @@ function np_tienda(): void
     if (!defined('ARRAY_A')) { define('ARRAY_A', 'ARRAY_A'); }
 }
 
+/** $wpdb de np_tienda que además apunta lo que se escribe en el Registro (tpv_sync_log). */
+function np_registro(): object
+{
+    $GLOBALS['wpdb'] = new class extends stdClass {
+        public string $prefix = 'wp_'; public string $posts = 'wp_posts'; public string $postmeta = 'wp_postmeta';
+        public array $filas = [];
+        public function insert($t, $f) { $this->filas[] = $f; return 1; }
+        public function get_results($q, $f = null) { return []; }
+        public function get_col($q) { return []; }
+        public function prepare($sql, ...$a) { return (new WpdbFalso())->prepare($sql, ...$a); }
+        public function get_var($q) { return (new WpdbFalso())->get_var($q); }
+    };
+    return $GLOBALS['wpdb'];
+}
+
 function np_sync(array $productos = []): TPV_Sync_Product_Sync
 {
     return (new TPV_Sync_Product_Sync(new ApiNoPublicableFalsa($productos)))->conStockEnVuelo(fn () => []);
@@ -639,6 +654,37 @@ function run_no_publicable_tests(WooTestRunner $t): void
         $t->assertEquals(0, $GLOBALS['__wp_thumbs'][8310] ?? 0, 'una principal que ya no viene sigue de destacada');
         $t->assertEquals('90', np_meta(8310, '_product_image_gallery'));
     });
+
+    // Una descarga sin Content-Type (o con uno que no es imagen) es una descarga fallida:
+    // antes, strtolower(strtok('', ';')) lanzaba un TypeError que cortaba el aviso antes
+    // de quitar la foto marcada.
+    $tipos = [
+        'sin Content-Type'          => [],
+        'con un tipo que no es imagen' => ['content-type' => 'text/html; charset=UTF-8'],
+    ];
+    foreach ($tipos as $caso => $cabeceras) {
+        $t->test("foto nueva {$caso} + una marcada que deja de venir ⇒ sin excepción, la marcada sale y la nueva no se adjunta", function ($t) use ($cabeceras) {
+            np_tienda_con_fotos();
+            $registro = np_registro();
+            $nueva = NP_IMG . 'nueva.jpg';
+            $GLOBALS['__http']['respuestas'][$nueva] = ['code' => 200, 'body' => '<html>no es una foto</html>', 'headers' => $cabeceras];
+            try {
+                $r = np_sync()->upsert(tpv_producto(502, ['images' => [
+                    ['url' => NP_IMG . 'principal.jpg', 'is_main' => true,  'sort_order' => 0],
+                    ['url' => NP_IMG . 'g1.jpg',        'is_main' => false, 'sort_order' => 1],
+                    ['url' => $nueva,                   'is_main' => false, 'sort_order' => 2],
+                ]]));   // g2, marcada: ya no viene. wp_tempnam y media_handle_sideload lanzan si se usan.
+            } finally {
+                unset($GLOBALS['__http']['respuestas'][$nueva]);
+            }
+            $t->assertEquals('updated', $r);
+            $t->assertEquals('82,90', np_meta(8310, '_product_image_gallery'), 'la marcada sigue publicada');
+            $t->assertEquals(81, $GLOBALS['__wp_thumbs'][8310] ?? 0);
+            $avisos = array_filter($registro->filas, fn ($f) => ($f['status'] ?? '') === 'warn'
+                && str_contains((string) ($f['message'] ?? ''), 'nueva.jpg'));
+            $t->assertEquals(1, count($avisos), 'la descarga fallida no queda en el Registro');
+        });
+    }
 
     $t->test('R7: una foto de la caja elegida a mano para otro producto se queda en su galería', function ($t) {
         np_tienda_con_fotos();

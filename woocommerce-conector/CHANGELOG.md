@@ -24,6 +24,9 @@ en el TPV como no publicables. La tienda online respeta esa marca:
 - **Si el TPV cambia de dominio, las fotos no se pierden ni se vuelven a
   descargar.** Una foto marcada sale siempre, aunque en ese momento falle la
   descarga de otra.
+- Una foto que el TPV sirve sin tipo, o con un tipo que no es de imagen, ya
+  no corta la sincronización del producto: no se añade y queda apuntada en el
+  Registro.
 - La marca de un producto la recoge el siguiente aviso del producto, el
   volcado, el repaso de stock de cada noche o «Reconciliar catálogos», que lo
   avisa en la simulación y no crea ni corrige un producto marcado. La de una

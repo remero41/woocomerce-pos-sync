@@ -3102,12 +3102,15 @@ class TPV_Sync_Product_Sync
         $body = wp_remote_retrieve_body($response);
         if (empty($body)) return null;
 
-        // Validar que el contenido es realmente una imagen
+        // Validar que el contenido es realmente una imagen. Sin Content-Type (o con varios
+        // y el primero no lo es) cuenta como descarga fallida: antes strtok('', ';') daba
+        // false y strtolower(false) lanzaba un TypeError que cortaba el aviso entero.
         $contentType = wp_remote_retrieve_header($response, 'content-type');
+        if (is_array($contentType)) $contentType = reset($contentType);
         $allowedMime = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-        $mime = strtolower(strtok($contentType, ';'));
-        if ($contentType && !in_array($mime, $allowedMime, true)) {
-            error_log("tpv-sync: download_image rechazado por MIME '$mime' para $url");
+        $mime = strtolower(trim(explode(';', (string) $contentType)[0]));
+        if (!in_array($mime, $allowedMime, true)) {
+            error_log("tpv-sync: download_image rechazado por tipo '" . ($mime !== '' ? $mime : 'sin Content-Type') . "' para $url");
             return null;
         }
 
@@ -3172,7 +3175,12 @@ class TPV_Sync_Product_Sync
             }
 
             $tmpFile = $this->download_image($url);
-            if (!$tmpFile) continue;
+            if (!$tmpFile) {
+                // No se pudo traer (red, HTTP, sin Content-Type o no es una imagen): no se
+                // adjunta y no frena la retirada de lo que dejó de venir.
+                $this->log('warn', $tpvId, "Foto de la caja no traída (post=$postId): " . substr($url, 0, 160));
+                continue;
+            }
 
             $huella = (string) md5_file($tmpFile);
             if (isset($porContenido[$huella])) {
