@@ -3,7 +3,8 @@ declare(strict_types=1);
 /**
  * Receptor de webhooks del TPV.
  *
- * Endpoint: https://tu-tienda.ejemplo.com/tpv-webhook/
+ * Endpoint: https://tu-tienda.ejemplo.com/?tpv_webhook=1 (TPV_Sync_Webhook::url()). La ruta
+ * vieja /tpv-webhook/ sigue respondiendo para las tiendas que aún la tienen guardada en el TPV.
  * Verifica firma HMAC-SHA256, despacha al handler correcto.
  *
  * Eventos manejados:
@@ -20,6 +21,43 @@ defined('ABSPATH') || exit;
 
 class TPV_Sync_Webhook
 {
+    /**
+     * La URL que se da al TPV para entregar los eventos. La usan las dos altas
+     * del webhook (el asistente y el re-registro silencioso) y la revisión que
+     * corrige la de las tiendas ya conectadas: una sola fuente.
+     *
+     * Es `?tpv_webhook=1` y no /tpv-webhook/: la ruta solo existe con enlaces
+     * permanentes «bonitos», y con los «Simple» WordPress devolvía la portada
+     * con un 200, así que el TPV daba cada evento por entregado y el Woo no
+     * aplicaba ninguno, sin un error en ningún lado. La variable de consulta
+     * llega con cualquier ajuste, también si la tienda lo cambia después
+     * (la hace pública add_rewrite_tag en register_webhook_endpoint()).
+     */
+    public static function url(): string
+    {
+        return self::urlDesde(home_url('/'));
+    }
+
+    /** La URL del webhook a partir de la portada (pura, para los tests). */
+    public static function urlDesde(string $portada): string
+    {
+        $frag = '';
+        if (($h = strpos($portada, '#')) !== false) {
+            $frag = substr($portada, $h);
+            $portada = substr($portada, 0, $h);
+        }
+        [$base, $consulta] = array_pad(explode('?', $portada, 2), 2, '');
+        $p = parse_url($base);
+        if (($p['path'] ?? '') === '') {
+            $base .= '/';
+        }
+        parse_str($consulta, $vars);
+        if (($vars['tpv_webhook'] ?? null) === '1') {
+            return $base . '?' . $consulta . $frag;
+        }
+        return $base . '?' . ($consulta === '' ? '' : $consulta . '&') . 'tpv_webhook=1' . $frag;
+    }
+
     /**
      * Versiones del payload que este plugin sabe procesar. El dispatcher
      * envía X-Webhook-Version; si no coincide devolvemos 426 Upgrade Required.

@@ -579,9 +579,10 @@ function run_endpoint_webhook_tests(WooTestRunner $t): void
     $t->test('la ruta declarada coincide con la que se registra en el TPV', function ($t) {
         $src   = (string) file_get_contents(dirname(__DIR__) . '/woocommerce-conector.php');
         $admin = (string) file_get_contents(dirname(__DIR__) . '/includes/class-admin.php');
-        $t->assert(str_contains($src, 'tpv-webhook'), 'la regla usa /tpv-webhook/');
-        $t->assert(str_contains($admin, "home_url('/tpv-webhook/')"),
-            'y al TPV se le da esa misma URL: si divergen, entrega en el vacío');
+        $hand  = (string) file_get_contents(dirname(__DIR__) . '/includes/class-webhook-handler.php');
+        $t->assert(str_contains($src, "'index.php?tpv_webhook=1'"), 'la regla /tpv-webhook/ lleva a ?tpv_webhook=1');
+        $t->assert(str_contains($admin, 'TPV_Sync_Webhook::url()') && str_contains($hand, "'tpv_webhook=1'"),
+            'y al TPV se le da ?tpv_webhook=1, la misma variable: si divergen, entrega en el vacío');
     });
 }
 

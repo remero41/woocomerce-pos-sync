@@ -3675,8 +3675,30 @@ class TPV_Sync_Admin
     }
 
     /**
+     * Lo que hay que cambiar del webhook que tiene el TPV ($enElTpv = su
+     * `data`): los eventos si falta alguno y la URL si no es la de ahora
+     * (las tiendas conectadas antes guardaron /tpv-webhook/, que con enlaces
+     * «Simple» no llega). [] si no hay nada. Si el TPV no devuelve la URL, no
+     * se toca: un PATCH a ciegas no arregla nada que se sepa roto.
+     */
+    public static function parcheDeWebhook(array $enElTpv, array $queremos, string $url): array
+    {
+        $parche = [];
+        if (self::faltanEventos((array) ($enElTpv['events'] ?? []), $queremos)) {
+            $parche['events'] = $queremos;
+        }
+        $suya = $enElTpv['url'] ?? null;
+        if (is_string($suya) && $suya !== '' && $suya !== $url) {
+            $parche['url'] = $url;
+        }
+        return $parche;
+    }
+
+    /**
      * Tras actualizar el plugin, revisa que el webhook del TPV incluya los
-     * eventos de ESTA versión y lo corrige si falta alguno.
+     * eventos de ESTA versión y lleve la URL de ahora (TPV_Sync_Webhook::url();
+     * las tiendas conectadas antes de la 2.18.0 guardaron /tpv-webhook/, que
+     * con enlaces «Simple» no llegaba), y lo corrige con un solo PATCH.
      *
      * Sin esto, una tienda ya conectada se queda con la lista con la que se
      * dio de alta: el dispatcher del TPV reparte con JSON_CONTAINS(events,?),
@@ -3704,13 +3726,13 @@ class TPV_Sync_Admin
             $actual = $api->get("/webhooks/$webhookId");
             if (!TPV_Sync_API_Client::fueBien($actual)) return;   // se reintenta en la próxima carga
 
-            $enElTpv = (array) ($actual['data']['events'] ?? []);
-            if (!self::faltanEventos($enElTpv, $queremos)) {
+            $parche = self::parcheDeWebhook((array) ($actual['data'] ?? []), $queremos, TPV_Sync_Webhook::url());
+            if ($parche === []) {
                 update_option('tpv_sync_webhook_eventos_version', TPV_SYNC_VERSION, false);
                 return;
             }
 
-            $r = $api->patch("/webhooks/$webhookId", ['events' => $queremos]);
+            $r = $api->patch("/webhooks/$webhookId", $parche);
             if (TPV_Sync_API_Client::fueBien($r)) {
                 update_option('tpv_sync_webhook_eventos_version', TPV_SYNC_VERSION, false);
             }
@@ -3734,7 +3756,7 @@ class TPV_Sync_Admin
         delete_option('tpv_sync_health_checked_at');
 
         $api        = new TPV_Sync_API_Client();
-        $webhookUrl = home_url('/tpv-webhook/');
+        $webhookUrl = TPV_Sync_Webhook::url();
 
         // Pre-acordamos el secret: lo generamos local y lo mandamos. Esto
         // elimina la ventana de race entre "TPV genera y guarda" y

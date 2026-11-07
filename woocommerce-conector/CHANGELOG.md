@@ -1,5 +1,18 @@
 ## 2.18.0
 
+### Los avisos del TPV llegan también con los enlaces permanentes «Simple»
+
+El TPV mandaba los avisos a `/tpv-webhook/`, una ruta que solo existe con los
+enlaces permanentes «bonitos». Con los «Simple» (los que deja WordPress recién
+instalado), WordPress contestaba con la portada: el TPV daba cada aviso por
+entregado y la tienda no aplicaba ninguno, sin un error en ningún lado.
+
+- La tienda le da ahora al TPV `?tpv_webhook=1`, que llega con cualquier ajuste
+  de enlaces, también si los cambias después.
+- Las tiendas ya conectadas no tienen que hacer nada: tras actualizar, el plugin
+  corrige la dirección en el TPV sin rotar la clave del webhook, y mientras
+  tanto la ruta vieja sigue funcionando donde funcionaba.
+
 ### Lo que el TPV marca como «no publicable» no sale en la tienda
 
 Las fotos y fichas que un mayorista solo deja usar en la caja se pueden marcar

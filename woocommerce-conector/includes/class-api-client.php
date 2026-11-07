@@ -275,7 +275,7 @@ class TPV_Sync_API_Client
             : [];
         if ($events === []) { return false; }
         $r = $this->post('/webhooks', [
-            'url'    => home_url('/tpv-webhook/'),
+            'url'    => TPV_Sync_Webhook::url(),
             'secret' => $newSecret,
             'events' => $events,
         ]);

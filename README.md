@@ -98,7 +98,7 @@ Hooks `woocommerce_new_product`, `woocommerce_update_product`, `wp_trash_post`:
 
 ### Webhooks TPV → WC
 
-Endpoint `/tpv-webhook/` registrado vía rewrite rule:
+Endpoint `?tpv_webhook=1` (`TPV_Sync_Webhook::url()`), que llega con cualquier ajuste de enlaces permanentes. La ruta `/tpv-webhook/` (rewrite rule) sigue respondiendo para las tiendas conectadas antes, y la revisión tras cada actualización les corrige la URL en el TPV con un PATCH:
 
 1. Verifica firma HMAC-SHA256 y versión del payload.
 2. **Idempotencia atómica**: `INSERT IGNORE` sobre tabla `wp_tpv_sync_webhook_idem` (PK única en `idempotency_key`).
