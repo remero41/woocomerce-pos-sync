@@ -196,6 +196,56 @@ function np_meta(int $postId, string $clave)
     return $GLOBALS['__wp_meta'][$postId][$clave] ?? null;
 }
 
+// ─── Lo que pide el asistente para «Resetear sincronización» (ajax_reset_sync) ─────────
+if (!function_exists('check_ajax_referer'))  { function check_ajax_referer($a, $q = false) { return true; } }
+if (!function_exists('current_user_can'))    { function current_user_can($c) { return !empty($GLOBALS['__wp_puede']); } }
+if (!function_exists('wp_send_json_success')) { function wp_send_json_success($d = null, $s = null) { $GLOBALS['__wp_json'] = ['ok' => true, 'data' => $d]; } }
+if (!function_exists('wp_send_json_error'))   { function wp_send_json_error($d = null, $s = null) { throw new RuntimeException('wp_send_json_error: ' . json_encode($d)); } }
+if (!function_exists('delete_metadata'))      { function delete_metadata($t, $id, $k, $v = '', $todos = false) { return true; } }
+
+/**
+ * Pulsa «Resetear sincronización» del asistente (TPV_Sync_Admin::ajax_reset_sync) sin borrar en el
+ * TPV, con un $wpdb que lee los enlaces de __wp_meta y aplica los DELETE de postmeta sobre él.
+ */
+function np_reset_sync(): array
+{
+    $GLOBALS['wpdb'] = new class extends stdClass {
+        public string $prefix = 'wp_'; public string $posts = 'wp_posts'; public string $postmeta = 'wp_postmeta';
+        public function insert($t, $f) { return 1; }
+        public function get_results($q, $f = null)
+        {
+            $out = [];
+            foreach ($GLOBALS['__wp_meta'] as $id => $m) {
+                if (isset($m['_tpv_product_id'])) { $out[] = (object) ['post_id' => $id, 'tpv_id' => $m['_tpv_product_id']]; }
+            }
+            return $out;
+        }
+        public function query($q)
+        {
+            if (!preg_match('/^\s*DELETE FROM wp_postmeta\s+WHERE meta_key\b(.*)$/s', (string) $q, $m)) {
+                throw new RuntimeException("consulta no esperada: $q");
+            }
+            preg_match_all("/'([^']+)'/", $m[1], $claves);
+            $n = 0;
+            foreach ($GLOBALS['__wp_meta'] as $id => $meta) {
+                foreach ($claves[1] as $c) {
+                    if (array_key_exists($c, $meta)) { unset($GLOBALS['__wp_meta'][$id][$c]); $n++; }
+                }
+            }
+            return $n;
+        }
+    };
+    $GLOBALS['__wp_puede'] = true;
+    $GLOBALS['__wp_json'] = null;
+    $_POST = [];
+    try {
+        (new TPV_Sync_Admin())->ajax_reset_sync();
+    } finally {
+        unset($GLOBALS['__wp_puede']);
+    }
+    return $GLOBALS['__wp_json'] ?? [];
+}
+
 /** msgid => msgstr de un .po (sin la cabecera). */
 function np_po(string $fichero): array
 {
@@ -443,6 +493,31 @@ function run_no_publicable_tests(WooTestRunner $t): void
         $t->assertEquals(['2RKA78306'], array_column($api->itemsBulk, 'sku'), 'el que no está marcado sí va');
         $t->assert(!isset($api->patches['/products/502']), 'ni por la ruta singular');
         $t->assertEquals(0, ($stats['errors'] ?? 0) + ($stats['fallback'] ?? 0), 'ni cuenta como error: es un omitido');
+    });
+
+    $t->test('313: el reset de la sincronización quita también la marca, así que «Enviar ahora» y asegurarEnTpv ya no se saltan el producto', function ($t) {
+        // Al reconectar (con otro TPV que no lo tiene, o con el mismo si lo desmarcó entretanto), un
+        // producto con la marca vieja no viajaría nunca y un pedido de Woo con él quedaría retenido.
+        np_tienda();
+        $GLOBALS['__wp_meta'][8310] += ['_tpv_product_id' => 502, '_tpv_no_publicable' => '1', '_tpv_no_publicable_estado' => 'publish'];
+        $GLOBALS['__wp_posts'][8310]->post_status = 'draft';      // lo retiró la marca
+        $r = np_reset_sync();
+        $t->assertEquals(true, $r['ok'] ?? null, 'el reset contesta');
+        $t->assertEquals(2, $r['data']['unlinked'] ?? null, 'desvincula 8310 y 8306 (cuenta solo los enlaces)');
+        $t->assertEquals([null, null, null], [np_meta(8310, '_tpv_product_id'), np_meta(8310, '_tpv_no_publicable'),
+            np_meta(8310, '_tpv_no_publicable_estado')], 'se van el enlace, la marca y el estado de antes');
+        $t->assertEquals(false, TPV_Sync_Product_Sync::esNoPublicable(8310));
+        $t->assertEquals('draft', estado_post(8310), 'el reset no publica nada: lo que venga del TPV decide');
+
+        $metas = $GLOBALS['__wp_meta'];                           // las metas tal como las dejó el reset,
+        np_tienda();                                              // con el $wpdb de la tienda
+        $GLOBALS['__wp_meta'] = $metas;
+        $GLOBALS['__wp_posts'][8310]->post_status = 'draft';
+        $api = new ApiNoPublicableFalsa();
+        (new TPV_Sync_Product_Sync($api))->push_wc_products_bulk([8310]);
+        $t->assertEquals(['R3UW28310'], array_column($api->itemsBulk, 'sku'), '«Enviar ahora» lo manda a la caja');
+        $t->assertEquals(777, (new TPV_Sync_Product_Sync(new ApiNoPublicableFalsa()))->asegurarEnTpv(8310),
+            'asegurarEnTpv lo da de alta: un pedido de Woo con él ya no se queda retenido');
     });
 
     $t->test('papelera, restaurar, borrar y borrar una talla en Woo no tocan la caja', function ($t) {
