@@ -3538,14 +3538,10 @@ class TPV_Sync_Admin
         $unlinked = $wpdb->query(
             "DELETE FROM {$metaTable} WHERE meta_key = '_tpv_product_id'"
         );
-        // La marca «no publicable» y el estado de antes eran de esa conexión: si se quedaran,
-        // «Enviar ahora» y asegurarEnTpv se saltarían el producto al volver a conectar (con otro
-        // TPV o con el mismo si lo desmarcó entretanto) y un pedido con él quedaría retenido. El
-        // estado del producto no se toca: el siguiente aviso del TPV vuelve a marcarlo si toca.
-        $wpdb->query(
-            "DELETE FROM {$metaTable} WHERE meta_key IN ('" . TPV_Sync_Product_Sync::NO_PUBLICABLE_META . "', '"
-            . TPV_Sync_Product_Sync::NO_PUBLICABLE_ESTADO_META . "')"
-        );
+        // La marca «no publicable» y el estado de antes se quedan: solo el TPV sabe si sigue. Un
+        // producto marcado y sin enlace no viaja hasta que el envío pregunta al TPV por él
+        // (TPV_Sync_Product_Sync::congeladoPorLaMarca): si lo tiene, se vuelve a enlazar sin
+        // mandarle la copia congelada de Woo; si no, la marca se va y se da de alta.
         // Los enlaces de categorías eran de esa conexión: al volver a conectar,
         // la unión los rehace (desde la API si es el mismo TPV).
         (new TPV_Sync_Product_Sync(new TPV_Sync_API_Client()))->categorias->olvidar();

@@ -64,11 +64,16 @@ final class ApiNoPublicableFalsa extends TPV_Sync_API_Client
     public array $llamadas = [];
     public array $patches = [];
     public array $itemsBulk = [];
+    /** El listado de productos falla (el TPV no contesta): ni el índice ni la búsqueda saben nada. */
+    public bool $listadoCae = false;
     public function __construct(private array $productos = []) {}
     public function get(string $path, array $params = []): array
     {
         $this->llamadas[] = "GET $path";
         if ($path === '/products') {
+            if ($this->listadoCae) {
+                return ['type' => 'https://errors.tpv/server_error', 'title' => 'Error del servidor', 'status' => 503];
+            }
             return ['data' => array_values($this->productos), 'meta' => ['cursor' => null]];
         }
         if (preg_match('#^/products/(\d+)$#', $path, $m)) {
@@ -202,6 +207,24 @@ if (!function_exists('current_user_can'))    { function current_user_can($c) { r
 if (!function_exists('wp_send_json_success')) { function wp_send_json_success($d = null, $s = null) { $GLOBALS['__wp_json'] = ['ok' => true, 'data' => $d]; } }
 if (!function_exists('wp_send_json_error'))   { function wp_send_json_error($d = null, $s = null) { throw new RuntimeException('wp_send_json_error: ' . json_encode($d)); } }
 if (!function_exists('delete_metadata'))      { function delete_metadata($t, $id, $k, $v = '', $todos = false) { return true; } }
+
+/**
+ * 8310 marcado por el TPV (502) y retirado a borrador, con el estado de antes «publish»: pulsa
+ * «Resetear sincronización» y devuelve la tienda con las metas que deja el reset (y el $wpdb de la
+ * tienda). Devuelve la respuesta del reset.
+ */
+function np_tras_reset(): array
+{
+    np_tienda();
+    $GLOBALS['__wp_meta'][8310] += ['_tpv_product_id' => 502, '_tpv_no_publicable' => '1', '_tpv_no_publicable_estado' => 'publish'];
+    $GLOBALS['__wp_posts'][8310]->post_status = 'draft';
+    $r = np_reset_sync();
+    $metas = $GLOBALS['__wp_meta'];
+    np_tienda();
+    $GLOBALS['__wp_meta'] = $metas;
+    $GLOBALS['__wp_posts'][8310]->post_status = 'draft';
+    return $r;
+}
 
 /**
  * Pulsa «Resetear sincronización» del asistente (TPV_Sync_Admin::ajax_reset_sync) sin borrar en el
@@ -495,29 +518,75 @@ function run_no_publicable_tests(WooTestRunner $t): void
         $t->assertEquals(0, ($stats['errors'] ?? 0) + ($stats['fallback'] ?? 0), 'ni cuenta como error: es un omitido');
     });
 
-    $t->test('313: el reset de la sincronización quita también la marca, así que «Enviar ahora» y asegurarEnTpv ya no se saltan el producto', function ($t) {
-        // Al reconectar (con otro TPV que no lo tiene, o con el mismo si lo desmarcó entretanto), un
-        // producto con la marca vieja no viajaría nunca y un pedido de Woo con él quedaría retenido.
-        np_tienda();
-        $GLOBALS['__wp_meta'][8310] += ['_tpv_product_id' => 502, '_tpv_no_publicable' => '1', '_tpv_no_publicable_estado' => 'publish'];
-        $GLOBALS['__wp_posts'][8310]->post_status = 'draft';      // lo retiró la marca
-        $r = np_reset_sync();
+    // Pendiente 313 y revisión final de B3a, I-R1. Tras «Resetear sincronización» un producto marcado
+    // se queda sin enlace: si la marca se quedara sin más, nunca volvería a viajar y un pedido de Woo con
+    // él quedaría retenido (313); si se borrara a ciegas, «Enviar ahora» mandaría su copia congelada y la
+    // API pisaría con ella el producto que el TPV sigue marcando (I-R1). Solo el TPV sabe si sigue.
+    $t->test('313: el reset desvincula, pero la marca se queda hasta que el TPV diga si sigue', function ($t) {
+        $r = np_tras_reset();
         $t->assertEquals(true, $r['ok'] ?? null, 'el reset contesta');
-        $t->assertEquals(2, $r['data']['unlinked'] ?? null, 'desvincula 8310 y 8306 (cuenta solo los enlaces)');
-        $t->assertEquals([null, null, null], [np_meta(8310, '_tpv_product_id'), np_meta(8310, '_tpv_no_publicable'),
-            np_meta(8310, '_tpv_no_publicable_estado')], 'se van el enlace, la marca y el estado de antes');
-        $t->assertEquals(false, TPV_Sync_Product_Sync::esNoPublicable(8310));
-        $t->assertEquals('draft', estado_post(8310), 'el reset no publica nada: lo que venga del TPV decide');
+        $t->assertEquals(2, $r['data']['unlinked'] ?? null, 'desvincula 8310 y 8306');
+        $t->assertEquals([null, '1', 'publish'], [np_meta(8310, '_tpv_product_id'), np_meta(8310, '_tpv_no_publicable'),
+            np_meta(8310, '_tpv_no_publicable_estado')], 'se va el enlace; la marca y el estado de antes se quedan');
+        $t->assertEquals('draft', estado_post(8310), 'el reset no publica nada');
+    });
 
-        $metas = $GLOBALS['__wp_meta'];                           // las metas tal como las dejó el reset,
-        np_tienda();                                              // con el $wpdb de la tienda
-        $GLOBALS['__wp_meta'] = $metas;
-        $GLOBALS['__wp_posts'][8310]->post_status = 'draft';
-        $api = new ApiNoPublicableFalsa();
+    $t->test('313, otro TPV que no lo tiene: «Enviar ahora» y asegurarEnTpv lo dan de alta y la marca de la conexión de antes se va', function ($t) {
+        np_tras_reset();
+        $api = new ApiNoPublicableFalsa();                            // el TPV nuevo no tiene nada
         (new TPV_Sync_Product_Sync($api))->push_wc_products_bulk([8310]);
         $t->assertEquals(['R3UW28310'], array_column($api->itemsBulk, 'sku'), '«Enviar ahora» lo manda a la caja');
+        $t->assertEquals([null, null], [np_meta(8310, '_tpv_no_publicable'), np_meta(8310, '_tpv_no_publicable_estado')],
+            'la marca era de la conexión de antes');
+        $t->assertEquals('draft', estado_post(8310), 'sin publicarlo a ciegas');
+
+        np_tras_reset();
         $t->assertEquals(777, (new TPV_Sync_Product_Sync(new ApiNoPublicableFalsa()))->asegurarEnTpv(8310),
             'asegurarEnTpv lo da de alta: un pedido de Woo con él ya no se queda retenido');
+    });
+
+    foreach (['por su código' => ['model' => 'R3UW28310', 'external_id' => '8310'],
+              'por el external_id aunque la caja le cambiara el código' => ['model' => 'OTRO-502', 'external_id' => '8310']] as $como => $ids) {
+        $t->test("I-R1, el mismo TPV y aún marcado ($como): «Enviar ahora» lo vuelve a enlazar y no manda su copia congelada", function ($t) use ($ids) {
+            np_tras_reset();
+            $api = new ApiNoPublicableFalsa([502 => tpv_producto(502, ['no_publicable' => true] + $ids)]);
+            (new TPV_Sync_Product_Sync($api))->push_wc_products_bulk([8310]);
+            $t->assertEquals([], $api->itemsBulk, 'la copia congelada de Woo pisaría el producto marcado de la caja');
+            $t->assertEquals([], array_values(array_filter($api->llamadas, fn ($l) => str_starts_with($l, 'PATCH') || str_starts_with($l, 'POST'))),
+                'ni por la ruta singular');
+            $t->assertEquals([502, '1'], [np_meta(8310, '_tpv_product_id'), np_meta(8310, '_tpv_no_publicable')], 'enlazado otra vez y marcado');
+            $t->assertEquals('draft', estado_post(8310), 'sigue retirado');
+
+            np_tras_reset();
+            $api = new ApiNoPublicableFalsa([502 => tpv_producto(502, ['no_publicable' => true] + $ids)]);
+            $t->assertEquals(502, (new TPV_Sync_Product_Sync($api))->asegurarEnTpv(8310), 'un pedido con él va al 502');
+            $t->assertEquals([], array_values(array_filter($api->llamadas, fn ($l) => str_starts_with($l, 'PATCH') || str_starts_with($l, 'POST'))),
+                'asegurarEnTpv tampoco manda nada');
+        });
+    }
+
+    $t->test('I-R1, el mismo TPV y desmarcado entretanto: se vuelve a enlazar, decide el TPV y vuelve a su estado de antes', function ($t) {
+        np_tras_reset();
+        $api = new ApiNoPublicableFalsa([502 => tpv_producto(502, ['no_publicable' => false, 'status' => 1, 'model' => 'R3UW28310',
+            'external_id' => '8310', 'price' => 4.25])]);
+        (new TPV_Sync_Product_Sync($api))->push_wc_products_bulk([8310]);
+        $t->assertEquals([], $api->itemsBulk, 'la copia de Woo es de antes de la marca: no pisa la de la caja');
+        $t->assertEquals([502, null, null], [np_meta(8310, '_tpv_product_id'), np_meta(8310, '_tpv_no_publicable'),
+            np_meta(8310, '_tpv_no_publicable_estado')], 'enlazado y desmarcado');
+        $t->assertEquals('publish', estado_post(8310), 'vuelve al estado de antes de la marca');
+        $t->assertEquals('4.25', np_meta(8310, '_regular_price'), 'con la ficha de la caja (su precio)');
+    });
+
+    $t->test('I-R1, el TPV no contesta: no se manda nada y la marca se queda para el siguiente envío', function ($t) {
+        np_tras_reset();
+        $api = new ApiNoPublicableFalsa([502 => tpv_producto(502, ['no_publicable' => true, 'model' => 'R3UW28310', 'external_id' => '8310'])]);
+        $api->listadoCae = true;
+        $sync = new TPV_Sync_Product_Sync($api);
+        $sync->push_wc_products_bulk([8310]);
+        $t->assertEquals(false, $sync->push_wc_product_to_tpv(8310));
+        $t->assertEquals([], $api->itemsBulk, 'sin saber si sigue marcado no viaja');
+        $t->assertEquals([], array_values(array_filter($api->llamadas, fn ($l) => str_starts_with($l, 'PATCH') || str_starts_with($l, 'POST'))));
+        $t->assertEquals([null, '1'], [np_meta(8310, '_tpv_product_id'), np_meta(8310, '_tpv_no_publicable')]);
     });
 
     $t->test('papelera, restaurar, borrar y borrar una talla en Woo no tocan la caja', function ($t) {
@@ -590,7 +659,8 @@ function run_no_publicable_tests(WooTestRunner $t): void
                   'public function push_wc_trash_to_tpv(', 'public function push_wc_untrash_to_tpv(',
                   'public function push_wc_delete_to_tpv(', 'public function push_wc_variation_delete_to_tpv(',
                   'private function push_images_to_tpv('] as $f) {
-            $t->assert(str_contains($cuerpo($ps, $f), 'esNoPublicable('), "sin guarda: $f");
+            $c = $cuerpo($ps, $f);
+            $t->assert(str_contains($c, 'esNoPublicable(') || str_contains($c, 'congeladoPorLaMarca('), "sin guarda: $f");
         }
         $cat = (string) file_get_contents(dirname(__DIR__) . '/includes/class-categorias-sync.php');
         $t->assert(str_contains($cuerpo($cat, 'public function unirProductos('), 'esNoPublicable('), 'sin guarda: unirProductos');
@@ -845,12 +915,22 @@ function run_no_publicable_tests(WooTestRunner $t): void
 
     $t->test('C: en el modo por defecto, también; y un marcado sin enlace no gana un enlace «0»', function ($t) {
         np_tienda();
-        $GLOBALS['__wp_meta'][8308] += ['_tpv_no_publicable' => '1'];   // marcado y sin enlace (tras un reset)
+        $GLOBALS['__wp_meta'][8306]['_tpv_no_publicable'] = '1';        // enlazado (900) y publicado a mano
         $api = new ApiNoPublicableFalsa();
+        (new TPV_Sync_Product_Sync($api))->push_wc_product_to_tpv(8306);
+        $t->assertEquals('draft', estado_post(8306));
+        $t->assertEquals([], $api->llamadas, 'llamó a la caja');
+
+        // Marcado y sin enlace (tras un reset) mientras el TPV no contesta: tampoco viaja, se retira
+        // igual y no gana un enlace «0». (Con el TPV contestando, decide el TPV: los casos de I-R1.)
+        np_tienda();
+        $GLOBALS['__wp_meta'][8308] += ['_tpv_no_publicable' => '1'];
+        $api = new ApiNoPublicableFalsa();
+        $api->listadoCae = true;
         (new TPV_Sync_Product_Sync($api))->push_wc_product_to_tpv(8308);
         $t->assertEquals('draft', estado_post(8308));
         $t->assertEquals(null, np_meta(8308, '_tpv_product_id'), 'se inventó un enlace');
-        $t->assertEquals([], $api->llamadas);
+        $t->assertEquals([], array_values(array_filter($api->llamadas, fn ($l) => !str_starts_with($l, 'GET'))), 'solo pregunta');
     });
 
     $t->test('R7: una foto de la caja elegida a mano para otro producto se queda en su galería', function ($t) {

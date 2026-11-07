@@ -31,10 +31,12 @@ en el TPV como no publicables. La tienda online respeta esa marca:
   volcado, el repaso de stock de cada noche o «Reconciliar catálogos», que lo
   avisa en la simulación y no crea ni corrige un producto marcado. La de una
   foto, el siguiente aviso de ese producto o el volcado.
-- «Resetear sincronización» quita también la marca: al volver a conectar,
-  «Enviar ahora» y los pedidos de la tienda vuelven a llevar ese producto al
-  TPV, y si el TPV lo sigue marcando el siguiente aviso lo vuelve a retirar. El
-  reset no cambia el estado del producto en la tienda.
+- Después de «Resetear sincronización», un producto marcado no se queda fuera
+  para siempre: «Enviar ahora» y los pedidos de la tienda preguntan antes al
+  TPV. Si el TPV lo tiene, se vuelve a enlazar sin mandarle la copia de la
+  tienda (si sigue marcado, sigue retirado; si ya no, vuelve a su estado de
+  antes). Si no lo tiene, se da de alta. Si el TPV no contesta, se espera al
+  siguiente envío.
 
 ## 2.17.2
 

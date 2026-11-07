@@ -1202,8 +1202,8 @@ class TPV_Sync_Product_Sync
         foreach ($postIds as $postId) {
             $postId = (int) $postId;
             // Un no publicable no viaja: su catálogo lo manda el TPV (ni enviado ni error:
-            // el asistente lo cuenta como omitido).
-            if (self::esNoPublicable($postId)) { continue; }
+            // el asistente lo cuenta como omitido). Sin enlace, se pregunta antes al TPV.
+            if ($this->congeladoPorLaMarca($postId)) { continue; }
             $payload = $this->buildPushPayload($postId);
             if ($payload === null) { $stats['errors']++; continue; }
             // Los productos con variantes no caben en /products/bulk: ese
@@ -1625,22 +1625,30 @@ class TPV_Sync_Product_Sync
      */
     private array $tpvCatalogIndex = [];
     private bool $tpvCatalogIndexLoaded = false;
+    /** El índice tiene el catálogo ENTERO (todas las páginas bien): un «no está» es de fiar. */
+    private bool $tpvCatalogIndexCompleto = false;
 
     private function getTpvCatalogIndex(): array
     {
         if ($this->tpvCatalogIndexLoaded) return $this->tpvCatalogIndex;
         $this->tpvCatalogIndexLoaded = true;
         $this->tpvCatalogIndex = ['by_external' => [], 'by_model' => [], 'by_sku' => []];
+        $this->tpvCatalogIndexCompleto = false;
 
         try {
             $cursor = null;
             $pageGuard = 0;
+            $completo = true;
             do {
                 // per_page 100: la API recorta a ese máximo (pedir 200 hacía
                 // creer que el tope de páginas cubría el doble).
                 $params = ['per_page' => 100, 'fields' => 'product_id,model,sku'];
                 if ($cursor !== null) { $params['cursor'] = $cursor; }
                 $r = $this->api->get('/products', $params);
+                if (!TPV_Sync_API_Client::fueBien($r)) {
+                    $completo = false;
+                    break;
+                }
                 foreach (($r['data'] ?? []) as $row) {
                     $tid = (int) ($row['product_id'] ?? 0);
                     if ($tid <= 0) continue;
@@ -1665,6 +1673,7 @@ class TPV_Sync_Product_Sync
             // 200.000 productos. Con 100 páginas un catálogo de más de 10.000
             // productos quedaba a medias y el resto se daba de alta duplicado.
             } while ($cursor !== null && $pageGuard < 2000);
+            $this->tpvCatalogIndexCompleto = $completo && $cursor === null;
         } catch (Throwable $e) {
             $this->log('error', 0, 'precarga TPV catalog: ' . $e->getMessage());
         }
@@ -2149,9 +2158,10 @@ class TPV_Sync_Product_Sync
         // congelada (upsert no la refresca) y no vuelve a la caja por ningún camino
         // (edición, volcado, CLI, autocurado, alta de un duplicado). El stock, sí:
         // va por push_wc_stock_change. Si alguien lo ha publicado a mano, se deshace al
-        // guardar, en local y sin llamar a la caja, en todos los modos.
-        if (self::esNoPublicable($postId)) {
-            if (!in_array((string) get_post_status($postId), ['draft', 'trash'], true)) {
+        // guardar, en local y sin llamar a la caja, en todos los modos. Sin enlace, se
+        // pregunta antes al TPV (congeladoPorLaMarca).
+        if ($this->congeladoPorLaMarca($postId)) {
+            if (self::esNoPublicable($postId) && !in_array((string) get_post_status($postId), ['draft', 'trash'], true)) {
                 $this->retirarNoPublicable($postId, (int) get_post_meta($postId, self::TPV_ID_META, true));
             }
             return false;
@@ -3775,6 +3785,70 @@ class TPV_Sync_Product_Sync
     public static function esNoPublicable(int $postId): bool
     {
         return get_post_meta($postId, self::NO_PUBLICABLE_META, true) === '1';
+    }
+
+    /**
+     * ¿La marca «no publicable» congela este producto (nada de su catálogo viaja a la caja)?
+     *
+     * Enlazado, sí: su catálogo lo manda el TPV. Sin enlace (lo deja así «Resetear
+     * sincronización», que conserva la marca: pendiente 313 y revisión final de B3a, I-R1) la
+     * marca es de la conexión de antes y solo el TPV sabe si sigue. Se mira en el catálogo del
+     * TPV lo que casaría el envío (el bulk de la API empareja por el external_id de este post o
+     * por el model; la ruta singular, también por el sku):
+     *  - el TPV lo tiene: se vuelve a enlazar SIN mandarle nada (lo que viajaría es la copia
+     *    congelada de Woo, que pisaría el producto de la caja: estado, nombre, precio) y decide el
+     *    TPV con su detalle (upsert: si sigue marcado se queda retirado; si no, se desmarca y
+     *    vuelve a su estado de antes). Si el producto del TPV ya es de otro post, no se enlaza y
+     *    tampoco viaja;
+     *  - no lo tiene (otro TPV, o lo borraron) y el catálogo se leyó entero: la marca ya no es de
+     *    nadie. Se quita (con el estado de antes; el producto se queda como esté) y viaja como
+     *    cualquier otro;
+     *  - el TPV no contesta (el catálogo no se leyó entero): sigue congelado; el siguiente envío
+     *    vuelve a preguntar.
+     */
+    private function congeladoPorLaMarca(int $postId): bool
+    {
+        if (!self::esNoPublicable($postId)) {
+            return false;
+        }
+        if ((int) get_post_meta($postId, self::TPV_ID_META, true) > 0) {
+            return true;
+        }
+        $product = function_exists('wc_get_product') ? wc_get_product($postId) : null;
+        if (!$product) {
+            return true;
+        }
+        $ids = TPV_Sync_Identificadores::paraProducto(
+            (string) get_post_meta($postId, '_global_unique_id', true),
+            (string) $product->get_sku(),
+            $postId
+        );
+        $indice = $this->getTpvCatalogIndex();
+        $casaria = array_values(array_unique(array_filter([
+            (int) ($indice['by_external'][(string) $postId] ?? 0),
+            $ids['model'] !== '' ? (int) ($indice['by_model'][$ids['model']] ?? 0) : 0,
+            $ids['sku'] !== '' ? (int) ($indice['by_sku'][$ids['sku']] ?? 0) : 0,
+        ])));
+        if ($casaria !== []) {
+            $tpvId = self::resolverEnlace($postId, $ids['model'], $ids['sku'], $indice,
+                fn (int $tid): int => $this->find_wc_post($tid));
+            if ($tpvId <= 0) {
+                $this->log('warn', $casaria[0], "No publicable sin enlace post=$postId: el producto del TPV que casaría ya es de otro post; no se le manda nada");
+                return true;
+            }
+            update_post_meta($postId, self::TPV_ID_META, $tpvId);
+            $this->log('ok', $tpvId, "No publicable sin enlace: enlazado otra vez post=$postId ↔ TPV id=$tpvId sin mandarle nada; decide el TPV");
+            $this->update_from_tpv($tpvId);
+            return true;
+        }
+        if (!$this->tpvCatalogIndexCompleto) {
+            $this->log('warn', 0, "No publicable sin enlace post=$postId: el catálogo del TPV no se pudo leer entero; no se manda hasta saber si sigue marcado");
+            return true;
+        }
+        delete_post_meta($postId, self::NO_PUBLICABLE_META);
+        delete_post_meta($postId, self::NO_PUBLICABLE_ESTADO_META);
+        $this->log('ok', 0, "No publicable sin enlace post=$postId: el TPV no lo tiene; la marca era de la conexión de antes y se quita");
+        return false;
     }
 
     private function log(string $status, int $resourceId, string $msg): void

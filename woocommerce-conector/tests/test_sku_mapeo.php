@@ -230,10 +230,12 @@ function run_sku_mapeo_tests(WooTestRunner $t): void
         // :955). Arreglar solo una deja el bug vivo segun por donde entre el
         // producto — este plugin ya se rompio asi antes. La autocuracion
         // (29-09-2026) es la tercera y asegurarEnTpv (pedidos, 30-09) la
-        // cuarta: las dos buscan la pareja con el mismo model.
+        // cuarta: las dos buscan la pareja con el mismo model. La quinta,
+        // congeladoPorLaMarca (revisión final de B3a, I-R1): busca en el TPV lo
+        // que casaría el envío de un no publicable sin enlace.
         $usos = preg_match_all('/TPV_Sync_Identificadores::paraProducto\s*\(/', $src);
-        $t->assertEquals(4, $usos,
-            'push, bulk, autocuracion y asegurarEnTpv deben mapear los identificadores igual');
+        $t->assertEquals(5, $usos,
+            'push, bulk, autocuracion, asegurarEnTpv y congeladoPorLaMarca deben mapear los identificadores igual');
     });
 
     $t->test('ya no queda el fallback __WC__ escrito a mano en el push', function ($t) {
