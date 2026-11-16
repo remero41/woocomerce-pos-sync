@@ -146,6 +146,7 @@ require_once __DIR__ . '/test_sin_gestion_pedidos_tpv.php';
 require_once __DIR__ . '/test_pvp.php';
 require_once __DIR__ . '/test_pvp_cuadre.php';
 require_once __DIR__ . '/test_venta_a_peso.php';
+require_once __DIR__ . '/test_venta_variacion_stock.php';
 require_once __DIR__ . '/test_cola_stock_delta.php';
 require_once __DIR__ . '/test_firma_legacy_replay.php';
 require_once __DIR__ . '/test_variaciones_plan.php';
@@ -202,6 +203,7 @@ run_stock_tpv_a_woo_tests($t);
 run_pvp_tests($t);
 run_pvp_cuadre_tests($t);
 run_venta_a_peso_tests($t);
+run_venta_variacion_stock_tests($t);
 run_stock_en_vuelo_tests($t);
 run_gtin_rancio_tests($t);
 

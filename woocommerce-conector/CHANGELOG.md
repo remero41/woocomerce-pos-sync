@@ -1,3 +1,18 @@
+## 2.17.3
+
+### Una venta de una talla descuenta de esa talla en el TPV
+
+- **Antes la venta de una variación bajaba el stock del producto, no el de
+  la talla.** En el TPV el stock de un producto con tallas es la suma de
+  ellas, así que el siguiente recálculo deshacía la venta y la talla vendida
+  seguía con el mismo stock. Ahora la venta lleva su talla y descuenta de
+  ella (necesita la API del TPV que acepta la talla en el ajuste de stock;
+  con una anterior se comporta como antes).
+- Una variación que no está enlazada a su talla del TPV no descuenta nada:
+  lo apunta en el Registro para ajustarla a mano.
+- «Reconciliar catálogos» ya no compara ni empuja el stock del padre de un
+  producto variable: su stock está en las tallas.
+
 ## 2.17.2
 
 ### El motivo de los errores también en pedidos, devoluciones y volcados

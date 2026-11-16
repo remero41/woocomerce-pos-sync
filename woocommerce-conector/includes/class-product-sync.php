@@ -545,11 +545,26 @@ class TPV_Sync_Product_Sync
             $qty = (int)$item->get_quantity();
             if ($qty <= 0) continue;
 
-            $this->api->patch("/products/$tpvId/stock", [
+            $venta = [
                 'quantity_change' => -$qty,
                 'reason'          => 'venta',
                 'comment'         => 'Venta WooCommerce #' . $wcOrderId,
-            ]);
+            ];
+            // Una variación descuenta de SU talla. Antes iba al padre: en el TPV
+            // bajaba el stock general y no la talla, y el recálculo (general =
+            // suma de tallas) deshacía la venta (16-11-2026). Sin enlace a su
+            // talla no se puede descontar bien: se registra y se salta.
+            $variacion = (int) $item->get_variation_id();
+            if ($variacion > 0) {
+                $povId = (int) get_post_meta($variacion, '_tpv_option_value_id', true);
+                if ($povId <= 0) {
+                    $this->log('error', (int) $tpvId, "Venta WC #{$wcOrderId}: la variación $variacion no está enlazada a una talla del TPV; descuenta su stock a mano en el TPV");
+                    continue;
+                }
+                $venta['product_option_value_id'] = $povId;
+            }
+
+            $this->api->patch("/products/$tpvId/stock", $venta);
         }
 
         update_post_meta($wcOrderId, '_tpv_stock_deducted', 1);
@@ -3796,8 +3811,12 @@ class TPV_Sync_Product_Sync
             // cuando gestionaba, o el 0 de un producto que el TPV no resta).
             // Sin esto «manda Woo» copiaba un _stock huérfano al TPV, y
             // «manda el TPV» agotaba en Woo lo que nadie contaba.
+            // Un variable tampoco: su stock vive en las tallas. En el TPV el
+            // general del padre es la suma de ellas y la API rechaza escribirlo
+            // (409 stock_from_variants); en Woo el _stock del padre no es el de
+            // ninguna talla. Las tallas viajan por su propio camino.
             $wooGestiona = get_post_meta($postId, '_manage_stock', true) === 'yes';
-            if (!TPV_Sync_Stock::seCuenta($wooGestiona, $p)) {
+            if (!TPV_Sync_Stock::seCuenta($wooGestiona, $p) || ($wcProduct && $wcProduct->is_type('variable'))) {
                 $fotoWc['quantity'] = $fotoTpv['quantity'] = 0.0;
             }
 
