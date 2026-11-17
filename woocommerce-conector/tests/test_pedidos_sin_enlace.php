@@ -173,6 +173,10 @@ final class WpdbPedidos
             }
             return array_values(array_unique($ids));
         }
+        if (str_contains($q['sql'], 'post_parent')) {
+            // fotoVariaciones(): las variaciones del producto.
+            return array_map('strval', $GLOBALS['__wp_variaciones'][(int) $q['args'][0]] ?? []);
+        }
         [$cursor, $limite] = $q['args'];
         preg_match("/meta_key = '([a-z_]+)'/", $q['sql'], $m);
         $ids = [];
@@ -189,6 +193,7 @@ function pedidos_tienda(array $opciones = []): void
 {
     volcado_tienda();
     $GLOBALS['wpdb'] = new WpdbPedidos();
+    $GLOBALS['__wp_variaciones'] = [];
     $GLOBALS['__wp_options'] = $opciones + ['tpv_sync_principal' => 'wc'];
     $GLOBALS['__wc_orders'] = [];
     TPV_Sync::$inst = null;

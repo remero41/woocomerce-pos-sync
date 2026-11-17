@@ -48,11 +48,12 @@ class TPV_Sync_Order_Sync
      * sabe qué talla salió, y el stock por talla se desincroniza (auditoría
      * del 22-09-2026). Con él, descuenta de la variante correcta.
      *
-     * Cuando no hay variante —producto simple, o variación que aún no se ha
-     * mapeado porque se creó en WC después del volcado— el campo NO se manda:
-     * un `product_option_value_id` a 0 haría que el TPV buscase una variante
-     * inexistente y rechazase la línea. Es preferible que descuente del padre
-     * a que la venta entera falle.
+     * Sin variante (producto simple) el campo NO se manda: un
+     * `product_option_value_id` a 0 haría que el TPV buscase una variante
+     * inexistente. Una variación sin enlace ya no va a nombre del padre
+     * (18-11-2026): la API la rechaza (422 variant_required) porque solo
+     * bajaba el general. lineasParaTpv() la enlaza en el momento o retiene
+     * el pedido.
      */
     public static function idsDeLinea(int $tpvProductId, ?int $tpvOptionValueId): array
     {
@@ -93,10 +94,10 @@ class TPV_Sync_Order_Sync
         // Una línea sin enlace ya NO se descarta (llegaba al TPV un pedido a
         // medias, o ninguno): se asegura su producto en el TPV en el momento.
         // Si alguna sigue sin gemelo, el pedido entero se retiene.
-        [$products, $faltan, $origen] = $this->lineasParaTpv($order);
+        [$products, $faltan, $origen, $sinTalla] = $this->lineasParaTpv($order);
 
-        if (!empty($faltan)) {
-            $this->retener($order, $faltan);
+        if (!empty($faltan) || !empty($sinTalla)) {
+            $this->retenerLineas($order, $faltan, $sinTalla);
             return;
         }
         if (empty($products)) {
@@ -181,9 +182,9 @@ class TPV_Sync_Order_Sync
             if ($roto === null || !$this->quitarEnlaceRoto($wcOrderId, $roto, $origen, $reparados)) {
                 break;
             }
-            [$products, $faltan, $origen] = $this->lineasParaTpv($order);
-            if (!empty($faltan)) {
-                $this->retener($order, $faltan);
+            [$products, $faltan, $origen, $sinTalla] = $this->lineasParaTpv($order);
+            if (!empty($faltan) || !empty($sinTalla)) {
+                $this->retenerLineas($order, $faltan, $sinTalla);
                 return;
             }
         }
@@ -200,6 +201,21 @@ class TPV_Sync_Order_Sync
             // que reembolsar automáticamente (puede ser producto reponible).
             $code  = TPV_Sync_API_Client::codigoDeError($result);
             $error = TPV_Sync_API_Client::mensajeDeError((int) ($result['_status'] ?? 0), $result);
+            if ($code === 'variant_required') {
+                // En el TPV el producto tiene tallas y en la tienda se vende sin
+                // talla (un simple, o una variación de otra estructura). No es
+                // transitorio: hasta que se enlace, el pedido se retiene (no a
+                // medias, y sin las 29 h de la cola).
+                $lineas = [];
+                foreach ($products as $l) {
+                    if (empty($l['options'])) {
+                        $lineas[] = (string) ($l['name'] ?? ('#' . (int) $l['product_id']));
+                    }
+                }
+                $this->retener($order, $lineas,
+                    'en el TPV tienen tallas y en la tienda se venden sin talla; enlaza cada variación con su talla');
+                return;
+            }
             if ($code === 'insufficient_stock' || str_contains((string)$error, 'insufficient_stock')) {
                 $order->update_status('on-hold',
                     'Pago recibido pero el TPV no tiene stock disponible. Revisar: reponer o reembolsar.');
@@ -228,13 +244,17 @@ class TPV_Sync_Order_Sync
      * post de Woo sale el enlace de cada una (para poder quitarlo si el TPV
      * lo rechaza).
      *
-     * @return array{0: array, 1: string[], 2: array<int, array{post:int, product_id:int, variacion:int, pov:int}>}
+     * Y las variaciones cuya talla no casa con ninguna del TPV: sin ella la
+     * API rechaza la línea (422 variant_required).
+     *
+     * @return array{0: array, 1: string[], 2: array<int, array{post:int, product_id:int, variacion:int, pov:int}>, 3: string[]}
      */
     private function lineasParaTpv($order): array
     {
         $products = [];
         $faltan   = [];
         $origen   = [];
+        $sinTalla = [];
         foreach ($order->get_items() as $item) {
             $tpvId = $this->products->asegurarEnTpv((int) $item->get_product_id());
             if (!$tpvId) {
@@ -251,10 +271,17 @@ class TPV_Sync_Order_Sync
 
             // Qué variante se vendió. get_product_id() devuelve el PADRE; la
             // talla concreta está en get_variation_id(), y su equivalente en
-            // el TPV en el meta _tpv_option_value_id que dejó el volcado.
+            // el TPV en el meta _tpv_option_value_id que dejó el volcado. Sin
+            // él, se enlaza ahora con las tallas que tiene hoy el TPV.
             $povId = 0;
-            if (method_exists($item, 'get_variation_id') && (int) $item->get_variation_id() > 0) {
-                $povId = (int) get_post_meta((int) $item->get_variation_id(), '_tpv_option_value_id', true);
+            $variacion = method_exists($item, 'get_variation_id') ? (int) $item->get_variation_id() : 0;
+            if ($variacion > 0) {
+                $talla = $this->products->tallaDeVariacion((int) $item->get_product_id(), $variacion, (int) $tpvId);
+                if ($talla === 0) {
+                    $sinTalla[] = $item->get_name() . ' (#' . $variacion . ')';
+                    continue;
+                }
+                $povId = (int) $talla;
             }
 
             $origen[] = ['post' => (int) $item->get_product_id(), 'product_id' => (int) $tpvId,
@@ -268,7 +295,7 @@ class TPV_Sync_Order_Sync
             ];
         }
 
-        return [$products, $faltan, $origen];
+        return [$products, $faltan, $origen, $sinTalla];
     }
 
     /**
@@ -319,19 +346,29 @@ class TPV_Sync_Order_Sync
      * UNA vez (el primer intento), para que la comerciante lo vea sin que cada
      * reintento le llene el pedido.
      */
-    private function retener($order, array $faltan): void
+    private function retener($order, array $faltan, string $motivo = 'no se pudo dar de alta en el TPV'): void
     {
         $wcOrderId = (int) $order->get_id();
         $lista     = implode(', ', $faltan);
         if ((string) get_post_meta($wcOrderId, self::PENDIENTE_META, true) === '') {
             $order->add_order_note(
-                "Pendiente de enviar al TPV: no se pudo dar de alta en el TPV: {$lista}. "
+                "Pendiente de enviar al TPV: {$motivo}: {$lista}. "
                 . 'Se reintentará solo en cuanto se pueda; no llegará incompleto.'
             );
         }
         update_post_meta($wcOrderId, self::PENDIENTE_META,
             wp_json_encode(['desde' => gmdate('c'), 'faltan' => $faltan]));
         $this->log($wcOrderId, 'pendiente', "Retenido: {$lista}");
+    }
+
+    /** Retiene por lo que falte: productos sin gemelo en el TPV o tallas sin enlazar. */
+    private function retenerLineas($order, array $faltan, array $sinTalla): void
+    {
+        if (!empty($faltan)) {
+            $this->retener($order, array_merge($faltan, $sinTalla));
+            return;
+        }
+        $this->retener($order, $sinTalla, 'su talla no casa con ninguna del producto en el TPV; enlaza la variación con su talla');
     }
 
     /**

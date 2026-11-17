@@ -1,3 +1,20 @@
+## 2.17.4
+
+### Un pedido con una talla llega con su talla, o se retiene
+
+- **Antes una variación sin enlace a su talla del TPV iba a nombre del
+  producto**: en el TPV solo bajaba el stock general, que dejaba de ser la
+  suma de las tallas. La API del TPV ya no lo acepta (422
+  `variant_required`).
+- Al mandar el pedido, una variación sin enlace (creada en Woo después del
+  volcado, o cuya talla se rehízo en el TPV) se enlaza en ese momento con las
+  tallas que tiene hoy el producto en el TPV, por su código o su valor.
+- Si no casa con ninguna, o el TPV contesta que el producto tiene tallas y en
+  la tienda se vende sin talla, el pedido se **retiene** con una nota que dice
+  qué línea falta. Se reintenta solo cada 5 minutos y nunca llega a medias.
+- Con el módulo de pedidos apagado, la venta de una variación sin enlace
+  también intenta enlazarla antes de descontar el stock.
+
 ## 2.17.3
 
 ### Una venta de una talla descuenta de esa talla en el TPV

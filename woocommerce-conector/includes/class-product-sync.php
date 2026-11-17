@@ -553,10 +553,11 @@ class TPV_Sync_Product_Sync
             // Una variación descuenta de SU talla. Antes iba al padre: en el TPV
             // bajaba el stock general y no la talla, y el recálculo (general =
             // suma de tallas) deshacía la venta (16-11-2026). Sin enlace a su
-            // talla no se puede descontar bien: se registra y se salta.
+            // talla se intenta enlazar con las del TPV (18-11-2026); si no casa
+            // con ninguna, no se puede descontar bien: se registra y se salta.
             $variacion = (int) $item->get_variation_id();
-            if ($variacion > 0) {
-                $povId = (int) get_post_meta($variacion, '_tpv_option_value_id', true);
+            $povId = $variacion > 0 ? $this->tallaDeVariacion((int) $item->get_product_id(), $variacion, (int) $tpvId) : null;
+            if ($povId !== null) {
                 if ($povId <= 0) {
                     $this->log('error', (int) $tpvId, "Venta WC #{$wcOrderId}: la variación $variacion no está enlazada a una talla del TPV; descuenta su stock a mano en el TPV");
                     continue;
@@ -3383,6 +3384,38 @@ class TPV_Sync_Product_Sync
             $this->log('ok', $tpvId, "Re-enlazadas $n tallas del post $postId con los ids actuales del TPV");
         }
         return $n;
+    }
+
+    /**
+     * La talla del TPV de una variación vendida, para mandar el pedido. Desde
+     * el 18-11-2026 la API no acepta una línea de un producto con tallas sin
+     * su talla (422 variant_required): antes la línea iba a nombre del padre
+     * y en el TPV solo bajaba el general, que dejaba de ser la suma de las
+     * tallas. Ya enlazada → su id. Si no, se re-enlazan las variaciones del
+     * producto con las tallas que tiene HOY el TPV (mismo emparejado que el
+     * alta: id, código, valor) y se vuelve a mirar.
+     *
+     * @return int|null el id de la talla; 0 si el producto del TPV tiene
+     *                  tallas y esta no casa con ninguna (o no se pudo
+     *                  preguntar al TPV); null si el producto del TPV no tiene
+     *                  tallas (la línea va sin talla, como un simple).
+     */
+    public function tallaDeVariacion(int $postId, int $variationId, int $tpvId): ?int
+    {
+        $povId = (int) get_post_meta($variationId, '_tpv_option_value_id', true);
+        if ($povId > 0) {
+            return $povId;
+        }
+        $r = $this->api->get("/products/$tpvId");
+        if (!TPV_Sync_API_Client::fueBien($r) || empty($r['data'])) {
+            return 0;
+        }
+        $options = array_values(array_filter((array) ($r['data']['options'] ?? []), fn ($o) => !empty($o['values'])));
+        if (!$options) {
+            return null;
+        }
+        $this->reemparejarTallas($postId, $options, $tpvId);
+        return (int) get_post_meta($variationId, '_tpv_option_value_id', true);
     }
 
     /** Atributos de variación que el producto ya tiene en Woo (taxonomías o nombres propios). */

@@ -14,12 +14,15 @@ declare(strict_types=1);
  * Regla del usuario: todo lo vendible en la tienda existe en el TPV y un
  * pedido nunca llega a medias. Un enlace roto se quita, el producto se vuelve
  * a asegurar (reenlazar si el TPV tiene su gemelo; alta si no) y el pedido se
- * reenvía. Una talla borrada va a nombre del padre, como una sin mapear.
+ * reenvía. Una talla borrada se re-enlaza con las que tiene hoy el TPV; si no
+ * casa con ninguna, el pedido se retiene (18-11-2026: ya no va a nombre del
+ * padre, que en el TPV solo bajaba el general).
  *
  * Se ejecuta send_to_tpv() de verdad, con WordPress, Woo y la API en memoria.
  */
 
 require_once __DIR__ . '/test_pedidos_sin_enlace.php';
+require_once __DIR__ . '/test_variaciones_plan.php';   // opciones_tpv()
 
 /** Línea de pedido de una talla concreta (get_variation_id > 0). */
 final class ItemTallaFalso
@@ -46,11 +49,19 @@ class ApiConBorrados extends TPV_Sync_API_Client
     public bool $formatoLegacy = false;
     public bool $rechazaTodo = false;
     private int $siguiente = 776;
+    /** @var array<int, array> product_id => ficha (GET /products/{id}), con sus `options` */
+    public array $fichas = [];
     public function __construct(public array $catalogo = [], public array $borrados = [],
                                 public array $tallasBorradas = []) {}
     public function get(string $path, array $params = []): array
     {
-        return $path === '/products' ? ['data' => $this->catalogo, 'meta' => ['cursor' => null]] : [];
+        if ($path === '/products') {
+            return ['data' => $this->catalogo, 'meta' => ['cursor' => null]];
+        }
+        if (preg_match('#^/products/(\d+)$#', $path, $m) && isset($this->fichas[(int) $m[1]])) {
+            return self::decide(200, ['data' => $this->fichas[(int) $m[1]]]);
+        }
+        return self::decide(404, ['errors' => [['error' => 'not_found', 'message' => 'Recurso no encontrado.']]]);
     }
     public function patch(string $path, array $body = []): array
     {
@@ -151,29 +162,89 @@ function run_enlace_borrado_tests(WooTestRunner $t): void
         $t->assertEquals([], $GLOBALS['wpdb']->cola);
     });
 
-    $t->test('talla borrada en el TPV: la línea va a nombre del padre y el pedido entra', function ($t) {
+    $t->test('talla borrada en el TPV y sin otra que case: el pedido se retiene, no va a nombre del padre', function ($t) {
         pedidos_tienda();
         $GLOBALS['__wp_meta'][8401] = ['_tpv_option_value_id' => 55];
         $api = new ApiConBorrados([['product_id' => 900, 'model' => '2RKA78306', 'sku' => '2RKA78306']], [], [55]);
-        $GLOBALS['__wc_orders'][1] = new PedidoWooFalso(1, [new ItemTallaFalso(8306, 8401)]);
+        $api->fichas[900] = ['product_id' => 900, 'options' => opciones_tpv([60 => ['XL', 'OTRA-XL']])];
+        $p = new PedidoWooFalso(1, [new ItemTallaFalso(8306, 8401)]);
+        $GLOBALS['__wc_orders'][1] = $p;
         borrados_sync($api)->send_to_tpv(1);
-        $t->assertEquals(1, count($api->pedidos), 'antes: rechazado entero por la talla');
-        $t->assertEquals(['product_id' => 900], array_intersect_key($api->pedidos[0]['products'][0] ?? [],
-            ['product_id' => 1, 'options' => 1]), 'sin la talla, como una variación sin mapear');
+        $t->assertEquals([], $api->pedidos, 'antes entraba sin talla: en el TPV solo bajaba el general (18-11-2026)');
         $t->assertEquals('', get_post_meta(8401, '_tpv_option_value_id', true), 'el enlace roto no se reutiliza');
-        $t->assertEquals(900, (int) get_post_meta(8306, '_tpv_product_id', true), 'el padre sigue enlazado');
+        $t->assert(get_post_meta(1, '_tpv_order_pendiente', true) !== '', 'retenido: se reintenta solo');
+        $t->assert(str_contains($p->notas[0] ?? '', 'Talla 8401'), 'la nota dice qué variación falta');
+        $t->assertEquals([], $GLOBALS['wpdb']->cola, 'no va a la cola de 29 h');
     });
 
-    $t->test('talla borrada junto a otra viva: solo pierde el enlace la borrada', function ($t) {
+    $t->test('talla borrada y el TPV la tiene con otro id: se re-enlaza por su código y el pedido entra', function ($t) {
+        pedidos_tienda();
+        $GLOBALS['__wp_meta'][8401] = ['_tpv_option_value_id' => 55, '_sku' => 'CAM-M'];
+        $GLOBALS['__wp_variaciones'][8306] = [8401];
+        $api = new ApiConBorrados([['product_id' => 900, 'model' => '2RKA78306', 'sku' => '2RKA78306']], [], [55]);
+        $api->fichas[900] = ['product_id' => 900, 'options' => opciones_tpv([77 => ['M', 'CAM-M'], 78 => ['L', 'CAM-L']])];
+        $GLOBALS['__wc_orders'][1] = new PedidoWooFalso(1, [new ItemTallaFalso(8306, 8401)]);
+        borrados_sync($api)->send_to_tpv(1);
+        $t->assertEquals([['product_option_value_id' => 77]], $api->pedidos[0]['products'][0]['options'] ?? null);
+        $t->assertEquals(77, (int) get_post_meta(8401, '_tpv_option_value_id', true), 'queda enlazada para la próxima');
+    });
+
+    $t->test('talla borrada junto a otra viva: solo pierde el enlace la borrada y el pedido no sale a medias', function ($t) {
         pedidos_tienda();
         $GLOBALS['__wp_meta'][8401] = ['_tpv_option_value_id' => 55];
         $GLOBALS['__wp_meta'][8402] = ['_tpv_option_value_id' => 56];
         $api = new ApiConBorrados([['product_id' => 900, 'model' => '2RKA78306', 'sku' => '2RKA78306']], [], [55]);
+        $api->fichas[900] = ['product_id' => 900, 'options' => opciones_tpv([56 => ['M', '']])];
         $GLOBALS['__wc_orders'][1] = new PedidoWooFalso(1, [new ItemTallaFalso(8306, 8401), new ItemTallaFalso(8306, 8402)]);
         borrados_sync($api)->send_to_tpv(1);
         $t->assertEquals(56, (int) get_post_meta(8402, '_tpv_option_value_id', true),
-            'la talla que el TPV sí tiene sigue atribuyendo su venta');
-        $t->assertEquals([['product_option_value_id' => 56]], $api->pedidos[0]['products'][1]['options'] ?? null);
+            'la talla que el TPV sí tiene sigue enlazada');
+        $t->assertEquals([], $api->pedidos, 'la otra no casa con ninguna: retenido entero');
+    });
+
+    $t->test('variación nunca enlazada (creada en Woo tras el volcado): se enlaza al vender', function ($t) {
+        pedidos_tienda();
+        $GLOBALS['__wp_meta'][8403] = ['_sku' => 'CAM-L'];
+        $GLOBALS['__wp_variaciones'][8306] = [8403];
+        $api = new ApiConBorrados([['product_id' => 900, 'model' => '2RKA78306', 'sku' => '2RKA78306']]);
+        $api->fichas[900] = ['product_id' => 900, 'options' => opciones_tpv([77 => ['M', 'CAM-M'], 78 => ['L', 'CAM-L']])];
+        $GLOBALS['__wc_orders'][1] = new PedidoWooFalso(1, [new ItemTallaFalso(8306, 8403)]);
+        borrados_sync($api)->send_to_tpv(1);
+        $t->assertEquals([['product_option_value_id' => 78]], $api->pedidos[0]['products'][0]['options'] ?? null,
+            'antes iba sin talla, a nombre del padre');
+    });
+
+    $t->test('variación cuyo producto del TPV no tiene tallas: va sin talla, como un simple', function ($t) {
+        pedidos_tienda();
+        $api = new ApiConBorrados([['product_id' => 900, 'model' => '2RKA78306', 'sku' => '2RKA78306']]);
+        $api->fichas[900] = ['product_id' => 900, 'options' => []];
+        $GLOBALS['__wc_orders'][1] = new PedidoWooFalso(1, [new ItemTallaFalso(8306, 8404)]);
+        borrados_sync($api)->send_to_tpv(1);
+        $t->assertEquals(1, count($api->pedidos));
+        $t->assertEquals(false, isset($api->pedidos[0]['products'][0]['options']));
+    });
+
+    $t->test('el TPV contesta variant_required (simple en Woo, con tallas en el TPV): retenido con su nota, sin cola', function ($t) {
+        pedidos_tienda();
+        $api = new class([['product_id' => 900, 'model' => '2RKA78306', 'sku' => '2RKA78306']]) extends ApiConBorrados {
+            public function post(string $path, array $body = [], ?string $idempotencyKey = null): array
+            {
+                if ($path !== '/orders') {
+                    return parent::post($path, $body, $idempotencyKey);
+                }
+                $this->intentosPedido++;
+                return self::decide(422, ['errors' => [['error' => 'variant_required', 'message' => 'El producto 900 tiene tallas']]]);
+            }
+        };
+        $p = pedido(1, [8306]);
+        $sync = borrados_sync($api);
+        $sync->send_to_tpv(1);
+        $sync->send_to_tpv(1);
+        $t->assertEquals(2, $api->intentosPedido, 'se reintenta (el cron de pendientes)');
+        $t->assert(get_post_meta(1, '_tpv_order_pendiente', true) !== '', 'retenido');
+        $t->assertEquals(1, count($p->notas), 'una sola nota aunque se reintente');
+        $t->assert(str_contains($p->notas[0], 'Producto 8306') && str_contains($p->notas[0], 'tallas'), 'dice qué línea y por qué');
+        $t->assertEquals([], $GLOBALS['wpdb']->cola, 'no va a la cola de 29 h');
     });
 
     $t->test('el formato de error clásico (errors[0].error) también se reconoce', function ($t) {
